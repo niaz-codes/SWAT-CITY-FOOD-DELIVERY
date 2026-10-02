@@ -49,7 +49,7 @@ export const RIDER_PROFILE: User = {
   verified: true,
 };
 
-export const ADMIN_PHONE = '03001112222';
+export const ADMIN_PHONE = '03450050667';
 
 export const ADMIN_USER: User = {
   id: 'adm_001',
