@@ -26,10 +26,13 @@ import type * as NotificationsNS from 'expo-notifications';
  *        - Android -> REMOVED. `getExpoPushTokenAsync` / `getDevicePushTokenAsync`
  *          / `addPushTokenListener` throw
  *          "Android Push notifications ... was removed from Expo Go".
- *      So the module is loaded lazily behind a capability check: on Android in
- *      Expo Go every remote-push entry point degrades to a no-op instead of
- *      throwing and taking the whole bundle down. Local notifications (tray
- *      channels, permission prompts) still work there.
+ *      On Android in Expo Go this module is therefore never imported at all -
+ *      see `notifications()` for why the throw cannot be caught. Consequence:
+ *      remote push AND local presentation (tray channel, permission prompt,
+ *      tap routing) are inert there. Nothing else in the app depends on them,
+ *      and the notification list inside the app is served by the backend.
+ *      Every other runtime - iOS Expo Go, the EAS development client, and
+ *      release builds - loads the module normally.
  *
  * Tokens are Expo Push Service tokens, delivered by the backend over the Expo
  * Push API; FCM tokens already in the database keep going through firebase-admin.
@@ -44,18 +47,37 @@ const TOKEN_KEY = '@swat/expo-push-token';
 const ANDROID_CHANNEL_ID = 'default';
 
 /**
- * expo-notifications is required lazily. On Android inside Expo Go, merely
- * touching its push APIs throws, so a throwing module load must never be able to
- * abort bundle evaluation.
+ * expo-notifications is required lazily, and on Android inside Expo Go it must
+ * not be required at all.
+ *
+ * The throw is not something the library lets us catch and skip: its own entry
+ * point pulls in `getExpoPushTokenAsync.js` -> `DevicePushTokenAutoRegistration`
+ * (`expo-notifications/build/index.js:12`), and that module's top-level code calls
+ * `addPushTokenListener`, which calls `warnOfExpoGoPushUsage()` and throws
+ * synchronously while the module body is still being evaluated. The failure
+ * therefore happens inside `require()` itself, and Metro surfaces a module-body
+ * throw as an uncaught error even when the caller wraps `require` in try/catch.
+ *
+ * The only reliable fix is to not enter that module on a runtime where its
+ * import-time side effect is fatal, so the check happens before `require`.
  */
 type NotificationsModule = typeof NotificationsNS;
 
 let notificationsModule: NotificationsModule | null = null;
 let notificationsLoadFailed = false;
 
+/** True when requiring expo-notifications is safe in this runtime. */
+function canLoadNotificationsModule(): boolean {
+  return !(Platform.OS === 'android' && isExpoGoClient());
+}
+
 /** The module, or null when it could not be loaded in this runtime. */
 function notifications(): NotificationsModule | null {
   if (notificationsModule || notificationsLoadFailed) return notificationsModule;
+  if (!canLoadNotificationsModule()) {
+    notificationsLoadFailed = true;
+    return null;
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     notificationsModule = require('expo-notifications') as NotificationsModule;
