@@ -1,0 +1,50 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+.DS_Store
+.env
+.env.local
+
+# Editors
+.idea/
+.vscode/
+
+# --- Secrets: never commit ---
+# Firebase server key (admin). Only FIREBASE_SERVICE_ACCOUNT_JSON on the host.
+firebase-service-account.json
+*firebase-adminsdk*.json
+
+# Release signing material. Use EAS credentials or local keystores instead.
+*.keystore
+!android/app/debug.keystore
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+
+# Upload keystore config read by plugins/withAndroidReleaseSigning.js.
+# keystore.properties.example IS committed on purpose.
+keystore.properties
+*.keystore.properties
+android/local.properties
+
+# Apple / iOS signing
+*.cer
+*.certSigningRequest
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Google Play submission service account (referenced by eas.json submit.production)
+google-play-service-account.json
+
+# NOTE: google-services.json / GoogleService-Info.plist are client SDK
+# identifiers, not server secrets. The app no longer references them in
+# app.json - push goes through Expo Push Service, which EAS wires up
+# automatically at build time - but they stay unignored so a project that
+# later adds direct FCM/APNs delivery still builds in CI.
+
+# Expo / EAS
+.expo-shared/
+eas-build.log

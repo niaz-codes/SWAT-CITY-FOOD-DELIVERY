@@ -1,0 +1,65 @@
+{
+  "expo": {
+    "name": "Swat City Food Delivery",
+    "slug": "swat-city",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#F5F8F7",
+    "icon": "./assets/icon.png",
+    "scheme": "swatcity",
+    "plugins": [
+      "expo-font",
+      "expo-status-bar",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0E3F3A",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 168,
+          "resizeMode": "contain"
+        }
+      ],
+      "./plugins/withPushNotifications",
+      "./plugins/withAndroidReleaseSigning",
+      [
+        "expo-notifications",
+        {
+          "color": "#0E9488",
+          "defaultChannel": "default",
+          "sounds": []
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableProguardInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "enableMinifyInReleaseBuilds": true
+          }
+        }
+      ],
+      "expo-web-browser"
+    ],
+    "android": {
+      "package": "com.swatcity.delivery",
+      "softwareKeyboardLayoutMode": "resize",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0E3F3A",
+        "monochromeImage": "./assets/adaptive-icon.png"
+      }
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.swatcity.delivery"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "93e97be7-9fd3-4024-8241-be6538a96051"
+      }
+    },
+    "owner": "niazkhan4371"
+  }
+}

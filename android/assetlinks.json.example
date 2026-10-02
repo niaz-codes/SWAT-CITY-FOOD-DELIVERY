@@ -1,0 +1,20 @@
+# Android Digital Asset Links (App Links verification)
+
+# IMPORTANT
+# assetlinks.json must reference your SIGNING CERTIFICATE SHA-256, not the debug
+# keystore SHA-1. For Play Store App Signing, use the SHA-256 from Play Console
+# (App Integrity / App Signing). For local upload signing, extract it from the
+# keystore:
+#
+#   keytool -list -v -keystore swatcity-upload.keystore -alias swatcity
+
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.swatcity.delivery",
+    "sha256_cert_fingerprints": [
+      "REPLACE_WITH_YOUR_UPLOAD_SIGNING_SHA256_FINGERPRINT"
+    ]
+  }
+}]
