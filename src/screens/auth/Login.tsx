@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
-import { StyleSheet, View, KeyboardAvoidingView, Platform, ScrollView, Pressable } from 'react-native';
+import { StyleSheet, View, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../../navigation/types';
@@ -10,17 +9,15 @@ import { AppText } from '../../components/AppText';
 import { AppButton } from '../../components/AppButton';
 import { AppInput } from '../../components/AppInput';
 import { BrandLogo } from '../../components/BrandLogo';
-import { authApi, ADMIN_PHONE, DEMO_DATA_ENABLED } from '../../services/api';
+import { authApi } from '../../services/api';
 import { useThemeColors } from '../../theme';
 import { spacing } from '../../theme/spacing';
-import { useAuth } from '../../state/AuthContext';
 import { useToast } from '../../state/ToastProvider';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Login'>;
 
 export function LoginScreen({ navigation }: Props) {
   const { colors } = useThemeColors();
-  const { setUser } = useAuth();
   const { error } = useToast();
   const [phone, setPhone] = useState('');
   const [loading, setLoading] = useState(false);
@@ -34,21 +31,6 @@ export function LoginScreen({ navigation }: Props) {
       return;
     }
     navigation.navigate('OTP', { phone, name: undefined });
-  };
-
-  const handleQuickLogin = async () => {
-    setLoading(true);
-    const user = await authApi.verifyOtp('0000');
-    setUser(user);
-    setLoading(false);
-  };
-
-  const handleAdminLogin = async () => {
-    setLoading(true);
-    const user = await authApi.verifyOtp('0000', undefined, ADMIN_PHONE);
-    setUser(user);
-    setLoading(false);
-    navigation.replace('AdminMain');
   };
 
   return (
@@ -99,26 +81,7 @@ export function LoginScreen({ navigation }: Props) {
 
                 <AppButton label="Continue" onPress={handleNext} loading={loading} icon="arrow-forward" iconPosition="right" style={styles.cta} />
 
-                {/* Demo quick-logins are gated to DEV builds only - see
-                    DEMO_DATA_ENABLED in src/services/api.ts. Hiding them in
-                    release builds keeps shipped builds free of mock sign-in. */}
-                {DEMO_DATA_ENABLED ? (
-                  <>
-                    <Pressable onPress={handleQuickLogin} style={styles.quickLogin} disabled={loading}>
-                      <Ionicons name="flash" size={14} color={colors.primary} />
-                      <AppText variant="smallMedium" color={colors.primary}>
-                        Use demo account
-                      </AppText>
-                    </Pressable>
-                    <Pressable onPress={handleAdminLogin} style={styles.quickLogin} disabled={loading}>
-                      <Ionicons name="shield-checkmark" size={14} color={colors.textMuted} />
-                      <AppText variant="smallMedium" color={colors.textMuted}>
-                        Admin demo
-                      </AppText>
-                    </Pressable>
-                  </>
-                ) : null}
-              </View>
+                </View>
             </Animated.View>
 
             <Animated.View entering={FadeInUp.delay(220).duration(500)} style={styles.footer}>
@@ -165,7 +128,6 @@ const styles = StyleSheet.create({
   },
   inputWrap: { flex: 1 },
   cta: { marginTop: spacing.l },
-  quickLogin: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, paddingVertical: spacing.s },
   footer: { marginTop: spacing.xl, gap: spacing.sm, width: '100%', maxWidth: 440, alignSelf: 'center' },
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: 4 },
   line: { flex: 1, height: StyleSheet.hairlineWidth },

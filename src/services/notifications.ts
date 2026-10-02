@@ -66,11 +66,45 @@ function notifications(): NotificationsModule | null {
 }
 
 /**
+ * True when this JS bundle is executing inside the prebuilt Expo Go binary.
+ *
+ * `expo.isRunningInExpoGo()` probes for a native module named `ExpoGo`, which
+ * only the prebuilt Expo Go client registers - a development build (even one
+ * built with `expo-dev-client`) and a release APK both report false.
+ *
+ * Deliberately NOT using `Constants.executionEnvironment === 'storeClient'` as
+ * the signal: that value covers Expo Go *and* expo-dev-client builds, so it
+ * would silently disable push in the EAS development APK this project is about
+ * to ship. See `logRuntimeEnvironment` for the dev-only assertion of both.
+ */
+function isExpoGoClient(): boolean {
+  return isRunningInExpoGo();
+}
+
+/** One-shot dev log so runtime capability can be verified from the Metro terminal. */
+let didLogRuntime = false;
+function logRuntimeEnvironment(): void {
+  if (didLogRuntime || !__DEV__) return;
+  didLogRuntime = true;
+  console.log(
+    '[push] runtime',
+    JSON.stringify({
+      platform: Platform.OS,
+      isDevice: Device.isDevice,
+      isExpoGo: isExpoGoClient(),
+      executionEnvironment: Constants?.executionEnvironment ?? null,
+      appOwnership: (Constants as unknown as { appOwnership?: string })?.appOwnership ?? null,
+    }),
+  );
+}
+
+/**
  * True only where a remote push token can actually be obtained.
  * iOS needs a physical device; Android needs anything except Expo Go.
  */
 function remotePushSupported(): boolean {
-  if (Platform.OS === 'android' && isRunningInExpoGo()) return false;
+  logRuntimeEnvironment();
+  if (Platform.OS === 'android' && isExpoGoClient()) return false;
   return Platform.OS === 'android' ? true : Device.isDevice;
 }
 
