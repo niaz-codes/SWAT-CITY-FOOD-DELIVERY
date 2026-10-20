@@ -22,7 +22,6 @@
       ],
       "./plugins/withPushNotifications",
       "./plugins/withAndroidReleaseSigning",
-      "./plugins/withGoogleServices",
       [
         "expo-notifications",
         {
@@ -48,7 +47,8 @@
           "photosPermission": "Allow Swat City to read a photo so admin can verify a rider's documents.",
           "cameraPermission": "Allow Swat City to use the camera to take your partner photo."
         }
-      ]
+      ],
+      "./plugins/withGoogleServices"
     ],
     "android": {
       "package": "com.swatcity.delivery",
