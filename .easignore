@@ -1,0 +1,53 @@
+# .easignore — explicit upload excludes for EAS Build.
+#
+# EAS archives the project from this file when present (falling back to
+# .gitignore otherwise). Nested .gitignore files such as android/.gitignore are
+# not reliably applied to the EAS archive, and a stale native build output
+# leaking into the builder is not a cosmetic problem:
+#
+# android/build/generated/autolinking/autolinking.json caches ABSOLUTE paths
+# from whichever machine last ran Gradle. A Windows-generated copy shipped to
+# the Linux builder makes Gradle configure projects under paths like
+#   /home/expo/workingdir/build/android/C:/Users/.../node_modules/react-native-worklets/android
+# and the build dies with "Configuring project ':react-native-worklets' without
+# an existing directory is not allowed."
+#
+# Keeping these out of the archive makes the build independent of whoever ran
+# the last local Gradle command.
+
+# --- JavaScript dependencies (installed fresh on the builder) ---
+node_modules/
+.expo/
+.expo-shared/
+dist/
+web-build/
+*.log
+
+# --- Native build output: machine-specific, must never ship ---
+android/build/
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+android/app/src/main/java/inline/
+android/app/src/main/assets/index.android.bundle
+android/app/src/main/assets/*.jsbundle
+android/local.properties
+ios/build/
+ios/Pods/
+ios/.xcode.env.local
+
+# --- Secrets and signing material ---
+.env
+.env.local
+*.keystore
+!android/app/debug.keystore
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+credentials.json
+keystore.properties
+*.keystore.properties
+google-play-service-account.json
+firebase-service-account.json
+*firebase-adminsdk*.json
