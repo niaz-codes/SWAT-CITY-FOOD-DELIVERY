@@ -28,6 +28,26 @@ export type AdminRider = AdminUser & {
   docStatus: DocStatus;
   earnings: number;
   deliveries: number;
+  /** Admin-approved profile photo. Riders can never write this themselves. */
+  avatarUrl: string | null;
+  /** Required when rejecting; shown back to the rider in their profile. */
+  rejectionReason: string | null;
+  hasApprovedPhoto: boolean;
+  /** Full CNIC - only admin review responses carry the unmasked value. */
+  cnic: string | null;
+  cnicIssueDate: string | null;
+  /**
+   * A vehicle change the rider proposed and is still waiting on. `null` when
+   * there is nothing queued; the live `vehicle`/`plateNumber` stay active until
+   * an admin approves it.
+   */
+  pendingVehicle: {
+    vehicleType: string | null;
+    vehicleBrand: string | null;
+    vehiclePlate: string | null;
+    requestedAt: string | null;
+    note: string | null;
+  } | null;
 };
 
 export type RestaurantStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
@@ -84,7 +104,8 @@ export type AdminOrder = {
   updatedAt: Date;
 };
 
-export type RideBookingStatus = 'searching' | 'accepted' | 'arriving' | 'started' | 'completed' | 'cancelled';
+export type RideBookingStatus =
+  'searching' | 'accepted' | 'arriving' | 'started' | 'completed' | 'cancelled';
 
 export type AdminRide = {
   id: string;
@@ -108,7 +129,10 @@ export type AdminPayment = {
   role: AdminUserRole;
   ref: string;
   amount: number;
-  method: 'card' | 'jazzcash' | 'cash' | 'wallet';
+  // Only the two real gateways. Card / cash / wallet rows may still exist in the
+  // database from before those methods were retired, and mapAdminPayment() folds
+  // them into the gateway that actually settled them.
+  method: 'easypaisa' | 'jazzcash';
   status: PaymentStatus;
   at: Date;
 };
@@ -130,6 +154,29 @@ export type AdminWalletOverview = {
   riderBalance: number;
   platformCommission: number;
   transactions: AdminWalletTx[];
+};
+
+export type WithdrawalStatus =
+  'pending' | 'approved' | 'processing' | 'paid' | 'rejected' | 'cancelled';
+
+/** Rider payout request (reserved at request time; real money moves on `paid`). */
+export type AdminWithdrawal = {
+  id: string;
+  reference: string;
+  rider: string;
+  riderPhone: string;
+  amount: number;
+  availableBalance: number;
+  destinationType: 'easypaisa' | 'bank';
+  destination: string;
+  destinationHolder: string;
+  status: WithdrawalStatus;
+  note?: string;
+  rejectReason?: string;
+  payoutReference?: string;
+  requestNote?: string;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 export type PromoAudience = 'all' | 'customers' | 'riders';
@@ -191,7 +238,13 @@ export type AdminReport = {
   commission: number;
   customers: number;
   riders: number;
-  topRestaurants: { name: string; orders: number; revenue: number; emoji: string; gradient: [string, string] }[];
+  topRestaurants: {
+    name: string;
+    orders: number;
+    revenue: number;
+    emoji: string;
+    gradient: [string, string];
+  }[];
   daily: { label: string; sales: number; orders: number }[];
 };
 
@@ -227,6 +280,7 @@ export type DashboardTotals = {
   pendingRiderApplications: number;
   pendingRestaurants: number;
   pendingOrders: number;
+  pendingWithdrawals: number;
   supportTickets: number;
 };
 

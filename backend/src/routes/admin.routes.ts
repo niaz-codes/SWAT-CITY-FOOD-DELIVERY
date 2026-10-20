@@ -11,6 +11,12 @@ import {
   adminListWallets,
   adminOrderDetail,
   adminWalletDetail,
+  adminListWithdrawals,
+  adminWithdrawalDetail,
+  adminApproveWithdrawal,
+  adminProcessWithdrawal,
+  adminRejectWithdrawal,
+  adminPayWithdrawal,
 } from '../controllers/admin.ops.controller';
 import {
   adminCreateFoodItem,
@@ -41,17 +47,26 @@ import {
   adminUpdateTicket,
 } from '../controllers/admin.commerce.controller';
 import {
+  adminListNotifications,
+  adminSendNotification,
+} from '../controllers/admin.notification.controller';
+import {
   activateRider,
+  adminUpdateVehiclePlate,
+  adminApproveVehicleChange,
+  adminRejectVehicleChange,
   approveRider,
   dashboard,
   listRiders,
   listUsers,
+  liveRiders,
   rejectRider,
   reports,
   reviewRider,
   riderDetail,
   suspendRider,
   updateUserStatus,
+  uploadRiderAvatar,
 } from '../controllers/admin.controller';
 import { requireAdmin, requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
@@ -66,12 +81,14 @@ import {
 } from '../validations/restaurant';
 import {
   appSettingSchema,
+  adminUpdateVehiclePlateSchema,
   promotionSchema,
   riderReviewSchema,
   supportStatusSchema,
   updatePromotionSchema,
   userStatusSchema,
 } from '../validations/admin';
+import { adminSendNotificationSchema } from '../validations/notification';
 import { z } from 'zod';
 
 const router = Router();
@@ -98,6 +115,36 @@ router.post('/riders/:id/reject', validate(idParamSchema, 'params'), rejectRider
 router.post('/riders/:id/suspend', validate(idParamSchema, 'params'), suspendRider);
 router.post('/riders/:id/activate', validate(idParamSchema, 'params'), activateRider);
 
+// Admin-only rider photo + bike number. `upload.single('photo')` streams the
+// buffer straight to Supabase Storage via the existing uploadFile service.
+router.post(
+  '/riders/:id/avatar',
+  validate(idParamSchema, 'params'),
+  upload.single('photo'),
+  uploadRiderAvatar,
+);
+router.patch(
+  '/riders/:id/vehicle',
+  validate(idParamSchema, 'params'),
+  validate(adminUpdateVehiclePlateSchema),
+  adminUpdateVehiclePlate,
+);
+// Rider-proposed vehicle changes require an admin decision before they apply.
+router.post(
+  '/riders/:id/vehicle/approve',
+  validate(idParamSchema, 'params'),
+  adminApproveVehicleChange,
+);
+router.post(
+  '/riders/:id/vehicle/reject',
+  validate(idParamSchema, 'params'),
+  validate(z.object({ reason: z.string().trim().max(200).optional() })),
+  adminRejectVehicleChange,
+);
+
+// Live map feed: approved riders that have reported a position.
+router.get('/riders-live', liveRiders);
+
 // ---------------------------------------------------------------------------
 // Restaurants & food & categories
 // ---------------------------------------------------------------------------
@@ -105,13 +152,23 @@ router.get('/restaurants', adminListRestaurants);
 router.post('/restaurants', validate(createRestaurantSchema), adminCreateRestaurant);
 router.patch('/restaurants/:id', validate(updateRestaurantSchema), adminUpdateRestaurant);
 router.delete('/restaurants/:id', validate(idParamSchema, 'params'), adminDeleteRestaurant);
-router.post('/restaurants/:id/upload', validate(idParamSchema, 'params'), upload.single('file'), adminUploadRestaurantImage);
+router.post(
+  '/restaurants/:id/upload',
+  validate(idParamSchema, 'params'),
+  upload.single('file'),
+  adminUploadRestaurantImage,
+);
 
 router.get('/food', adminListFoodItems);
 router.post('/food', validate(createFoodItemSchema), adminCreateFoodItem);
 router.patch('/food/:id', validate(updateFoodItemSchema), adminUpdateFoodItem);
 router.delete('/food/:id', validate(idParamSchema, 'params'), adminDeleteFoodItem);
-router.post('/food/:id/upload', validate(idParamSchema, 'params'), upload.single('file'), adminUploadFoodImage);
+router.post(
+  '/food/:id/upload',
+  validate(idParamSchema, 'params'),
+  upload.single('file'),
+  adminUploadFoodImage,
+);
 
 router.get('/categories', adminListCategories);
 router.post('/categories', validate(createFoodCategorySchema), adminCreateCategory);
@@ -124,11 +181,23 @@ router.delete('/categories/:id', validate(idParamSchema, 'params'), adminDeleteC
 router.get('/orders', adminListOrders);
 router.get('/orders/:id', validate(idParamSchema, 'params'), adminOrderDetail);
 router.patch('/orders/:id/status', validate(z.object({ status: z.string() })), adminAdvanceOrder);
-router.post('/orders/:id/cancel', validate(z.object({ reason: z.string().optional() })), adminCancelOrder);
-router.post('/orders/:id/assign-rider', validate(z.object({ riderId: z.string() })), adminAssignRider);
+router.post(
+  '/orders/:id/cancel',
+  validate(z.object({ reason: z.string().optional() })),
+  adminCancelOrder,
+);
+router.post(
+  '/orders/:id/assign-rider',
+  validate(z.object({ riderId: z.string() })),
+  adminAssignRider,
+);
 
 router.get('/rides', adminListRides);
-router.post('/rides/:id/cancel', validate(z.object({ reason: z.string().optional() })), adminCancelRide);
+router.post(
+  '/rides/:id/cancel',
+  validate(z.object({ reason: z.string().optional() })),
+  adminCancelRide,
+);
 
 // ---------------------------------------------------------------------------
 // Payments & wallets
@@ -137,6 +206,26 @@ router.get('/payments', adminListPayments);
 router.get('/wallets', adminListWallets);
 router.get('/wallets/:id', validate(idParamSchema, 'params'), adminWalletDetail);
 router.get('/transactions', adminListWalletTransactions);
+
+// ---------------------------------------------------------------------------
+// Withdrawals (rider payouts)
+// ---------------------------------------------------------------------------
+router.get('/withdrawals', adminListWithdrawals);
+router.get('/withdrawals/:id', validate(idParamSchema, 'params'), adminWithdrawalDetail);
+router.post('/withdrawals/:id/approve', validate(idParamSchema, 'params'), adminApproveWithdrawal);
+router.post('/withdrawals/:id/process', validate(idParamSchema, 'params'), adminProcessWithdrawal);
+router.post(
+  '/withdrawals/:id/reject',
+  validate(idParamSchema, 'params'),
+  validate(z.object({ reason: z.string().trim().min(1).max(300) })),
+  adminRejectWithdrawal,
+);
+router.post(
+  '/withdrawals/:id/pay',
+  validate(idParamSchema, 'params'),
+  validate(z.object({ payoutReference: z.string().trim().min(3).max(120) })),
+  adminPayWithdrawal,
+);
 
 // ---------------------------------------------------------------------------
 // Promotions, settings, support
@@ -155,5 +244,11 @@ router.patch('/settings/:key', validate(updateSettingPayloadSchema), adminUpdate
 router.get('/support', adminListTickets);
 router.get('/support/:id', validate(idParamSchema, 'params'), adminTicketDetail);
 router.patch('/support/:id', validate(supportStatusSchema.partial()), adminUpdateTicket);
+
+// ---------------------------------------------------------------------------
+// Broadcast notifications
+// ---------------------------------------------------------------------------
+router.get('/notifications', adminListNotifications);
+router.post('/notifications', validate(adminSendNotificationSchema), adminSendNotification);
 
 export default router;

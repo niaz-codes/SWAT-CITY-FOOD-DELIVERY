@@ -90,6 +90,89 @@ export type Order = {
 
 export type RiderStatus = 'online' | 'offline' | 'busy';
 
+/** Mirrors the backend approval workflow. */
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+export type LastLocation = {
+  lat: number;
+  lng: number;
+  heading: number;
+  speed: number;
+  updatedAt: string | null;
+};
+
+export type RiderBaseLocation = {
+  lat: number | null;
+  lng: number | null;
+  label: string | null;
+  setAt: string | null;
+};
+
+/** A vehicle change the rider proposed that an admin still has to approve. */
+export type RiderPendingVehicle = {
+  vehicleType: string | null;
+  vehicleBrand: string | null;
+  vehiclePlate: string | null;
+  requestedAt: string | null;
+  note: string | null;
+};
+
+/**
+ * The real rider profile from `/rider/profile`.
+ *
+ * `cnic` is masked here for the rider's own session; only admin review
+ * responses carry the full number.
+ */
+export type RiderProfile = {
+  _id: string;
+  name: string;
+  phone?: string;
+  cnic?: string | null;
+  cnicIssueDate?: string | null;
+  avatarUrl?: string | null;
+  vehicleType?: string | null;
+  vehicleBrand?: string | null;
+  vehiclePlate?: string | null;
+  pendingVehicle?: RiderPendingVehicle | null;
+  baseLocation?: RiderBaseLocation | null;
+  rating: number;
+  totalDeliveries: number;
+  approvalStatus: ApprovalStatus;
+  rejectionReason?: string | null;
+  status: RiderStatus;
+  isOnline: boolean;
+  suspendedAt?: string | null;
+  reviewedAt?: string | null;
+  lastLocation?: LastLocation | null;
+};
+
+/** A rider as surfaced on the admin live map. */
+export type LiveRider = {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  status: RiderStatus;
+  phone: string | null;
+  vehiclePlate: string | null;
+  vehicleType: string;
+  latitude: number | null;
+  longitude: number | null;
+  heading: number;
+  lastLocationAt: string | null;
+};
+
+/** Payload pushed over the socket when an allowed party may see a rider move. */
+export type RiderLocationEvent = {
+  riderId: string;
+  latitude: number;
+  longitude: number;
+  heading: number;
+  speed: number;
+  status: RiderStatus;
+  timestamp: string;
+  orderId?: string;
+};
+
 export type Rider = {
   id: string;
   name: string;
