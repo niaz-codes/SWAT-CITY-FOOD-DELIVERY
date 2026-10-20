@@ -13,7 +13,27 @@ export const API_BASE_URL = (
 ).replace(/\/+$/, '');
 
 const TOKENS_KEY = '@swat/tokens';
+
+/**
+ * Timeout for ordinary JSON requests. These are small and the server answers
+ * from a warm database, so a short budget keeps a dead network from leaving the
+ * UI spinning.
+ */
 const REQUEST_TIMEOUT_MS = 12_000;
+
+/**
+ * Timeout for multipart uploads.
+ *
+ * The timeout covers the *whole* request, including the time spent pushing the
+ * bytes upstream — not just waiting for a response. Rider sign-up sends a camera
+ * capture, which is routinely 1.5-4MB even at `quality: 0.7`, so the 12s that
+ * suits a JSON call aborted healthy registrations mid-upload on a mobile
+ * connection and surfaced as "The request timed out" / "Network unreachable".
+ * 60s gives a ~4MB photo roughly 60KB/s of headroom, which is slow-but-real for
+ * a 3G/4G link in Swat. The server-side multer limit is 5MB, so a body that
+ * fits that cap will still finish well inside this budget.
+ */
+const UPLOAD_TIMEOUT_MS = 60_000;
 
 export type ApiTokens = {
   accessToken: string;
@@ -157,9 +177,10 @@ type ExecuteResult = {
 async function execute(
   rawUrl: string,
   init: RequestInit & { signal?: AbortSignal },
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<ExecuteResult> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(rawUrl, init as RequestInit);
     const text = await res.text();
@@ -197,6 +218,7 @@ async function request<T>(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   body?: unknown,
   auth = true,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   // FormData must set its own multipart boundary, so Content-Type is left to
@@ -218,11 +240,16 @@ async function request<T>(
 
   let result: ExecuteResult;
   try {
-    result = await execute(rawUrl, init);
+    result = await execute(rawUrl, init, timeoutMs);
   } catch (error) {
-    if (isNetworkError(error)) {
+    // An upload is retried only when the failure was immediate (the connection
+    // was refused before any data moved). A timeout means the photo was already
+    // partway upstream; re-sending the whole body would double the bytes on an
+    // already-slow link and land on the same timeout, so it is reported instead.
+    const retryable = !isFormData || !(error instanceof ApiError && error.kind === 'network');
+    if (retryable && isNetworkError(error)) {
       await sleep(300);
-      result = await execute(rawUrl, init);
+      result = await execute(rawUrl, init, timeoutMs);
     } else {
       throw error;
     }
@@ -262,10 +289,13 @@ export const httpDelete = <T = unknown>(path: string, auth = true) =>
 /**
  * Multipart upload helper. `body` is forwarded as-is so fetch can set the
  * multipart boundary; never pass a plain object here.
+ *
+ * Uses the longer upload budget: a camera photo can take far more than the JSON
+ * timeout to reach the server on a mobile connection.
  */
 export const httpUpload = <T = unknown>(
   path: string,
   body: FormData,
   method: 'POST' | 'PATCH' = 'POST',
   auth = true,
-) => request<T>(path, method, body, auth);
+) => request<T>(path, method, body, auth, UPLOAD_TIMEOUT_MS);
