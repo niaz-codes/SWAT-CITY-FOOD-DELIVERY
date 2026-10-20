@@ -1,4 +1,4 @@
-# Android Digital Asset Links (App Links verification)
+﻿# Android Digital Asset Links (App Links verification)
 
 # IMPORTANT
 # assetlinks.json must reference your SIGNING CERTIFICATE SHA-256, not the debug
