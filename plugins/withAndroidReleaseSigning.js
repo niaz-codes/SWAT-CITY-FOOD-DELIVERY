@@ -1,4 +1,4 @@
-const { withAppBuildGradle } = require('@expo/config-plugins');
+const { withAppBuildGradle, withDangerousMod } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
@@ -48,7 +48,7 @@ const ANCHOR_RELEASE_SIGNING =
 
 const REPLACEMENT_RELEASE_SIGNING =
   '// Upload signing comes from android/keystore.properties when present.\n' +
-  '            signingConfig rootProject.file(\'keystore.properties\').exists()\n' +
+  "            signingConfig rootProject.file('keystore.properties').exists()\n" +
   '                ? signingConfigs.release\n' +
   '                : signingConfigs.debug';
 
@@ -75,7 +75,7 @@ module.exports = function withAndroidReleaseSigning(config) {
       throw new Error(
         '[withAndroidReleaseSigning] Could not find the generated release ' +
           'signingConfig block in android/app/build.gradle. The Expo template ' +
-          'changed - update the anchors in plugins/withAndroidReleaseSigning.js.'
+          'changed - update the anchors in plugins/withAndroidReleaseSigning.js.',
       );
     }
 
@@ -89,7 +89,7 @@ module.exports = function withAndroidReleaseSigning(config) {
       throw new Error(
         '[withAndroidReleaseSigning] Could not find the generated signingConfigs ' +
           'block in android/app/build.gradle. Update the anchors in ' +
-          'plugins/withAndroidReleaseSigning.js.'
+          'plugins/withAndroidReleaseSigning.js.',
       );
     }
 
@@ -100,12 +100,99 @@ module.exports = function withAndroidReleaseSigning(config) {
 
   // Ship a documented template next to the generated build file.
   config = withAppBuildGradle(config, (cfg) => {
-    const examplePath = path.join(cfg.modRequest.platformProjectRoot, 'keystore.properties.example');
+    const examplePath = path.join(
+      cfg.modRequest.platformProjectRoot,
+      'keystore.properties.example',
+    );
     if (!fs.existsSync(examplePath)) {
       fs.writeFileSync(examplePath, EXAMPLE);
     }
     return cfg;
   });
 
+  // Regenerate keystore.properties + the keystore itself when they are missing.
+  //
+  // `expo prebuild --clean` deletes the whole android/ tree, including both
+  // files, so a local release build after a prebuild would silently fall back
+  // to the shared debug key (see build.gradle). EAS is unaffected - it reads
+  // credentials.json locally and uploads the keystore with the build job - but
+  // local builds need them on disk.
+  //
+  // credentials.json is gitignored and may legitimately be absent (fresh clone,
+  // CI without the upload key), so this warns rather than throwing.
+  config = withDangerousMod(config, [
+    'android',
+    (cfg) => {
+      const platformRoot = cfg.modRequest.platformProjectRoot;
+      const projectRoot = cfg.modRequest.projectRoot;
+
+      if (fs.existsSync(path.join(platformRoot, 'keystore.properties'))) {
+        return cfg;
+      }
+
+      const credentialsPath = path.join(projectRoot, 'credentials.json');
+      if (!fs.existsSync(credentialsPath)) {
+        console.warn(
+          '[withAndroidReleaseSigning] credentials.json not found - release ' +
+            'builds will be signed with the debug key.',
+        );
+        return cfg;
+      }
+
+      let keystore;
+      try {
+        keystore = JSON.parse(fs.readFileSync(credentialsPath, 'utf8')).android?.keystore;
+      } catch (error) {
+        console.warn(
+          `[withAndroidReleaseSigning] could not read credentials.json (${error.message}). ` +
+            'Release builds will be signed with the debug key.',
+        );
+        return cfg;
+      }
+
+      if (!keystore?.keystorePath) {
+        console.warn(
+          '[withAndroidReleaseSigning] credentials.json has no android.keystore - ' +
+            'release builds will be signed with the debug key.',
+        );
+        return cfg;
+      }
+
+      // build.gradle resolves storeFile relative to android/, and the path in
+      // credentials.json is repo-relative ("android/app/release.keystore").
+      const relativeStoreFile = keystore.keystorePath.replace(/^android[\\/]/, '');
+      writeKeystoreProperties(
+        path.join(platformRoot, 'keystore.properties'),
+        relativeStoreFile,
+        keystore,
+      );
+
+      // credentials.json holds only the passwords, so the keystore itself is
+      // restored from the gitignored copy kept at the repo root (outside
+      // android/, which --clean destroys).
+      const keystoreTarget = path.resolve(platformRoot, relativeStoreFile);
+      const keystoreSource = path.join(projectRoot, path.basename(relativeStoreFile));
+      if (!fs.existsSync(keystoreTarget) && fs.existsSync(keystoreSource)) {
+        fs.mkdirSync(path.dirname(keystoreTarget), { recursive: true });
+        fs.copyFileSync(keystoreSource, keystoreTarget);
+      }
+
+      return cfg;
+    },
+  ]);
+
   return config;
 };
+
+/** Writes the Gradle-readable signing file. Values are never logged. */
+function writeKeystoreProperties(targetPath, storeFile, keystore) {
+  const body = [
+    `storeFile=${storeFile}`,
+    `storePassword=${keystore.keystorePassword ?? ''}`,
+    `keyAlias=${keystore.keyAlias ?? ''}`,
+    `keyPassword=${keystore.keyPassword ?? ''}`,
+    '',
+  ].join('\n');
+
+  fs.writeFileSync(targetPath, body);
+}

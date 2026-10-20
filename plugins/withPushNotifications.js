@@ -79,7 +79,16 @@ function ensureFcmMetaData(manifest) {
 
 /** Defines @color/notification_id in colors.xml so the manifest entry resolves. */
 function ensureNotificationColor(projectRoot) {
-  const colorsPath = path.join(projectRoot, 'android', 'app', 'src', 'main', 'res', 'values', 'colors.xml');
+  const colorsPath = path.join(
+    projectRoot,
+    'android',
+    'app',
+    'src',
+    'main',
+    'res',
+    'values',
+    'colors.xml',
+  );
   if (!fs.existsSync(colorsPath)) return;
 
   let xml = fs.readFileSync(colorsPath, 'utf8');
@@ -103,7 +112,7 @@ function copyNotificationIcons(projectRoot) {
     if (!fs.existsSync(source)) {
       throw new Error(
         `[withPushNotifications] Missing ${path.relative(projectRoot, source)}. ` +
-          'Run: powershell -ExecutionPolicy Bypass -File scripts\\build-assets.ps1'
+          'Run: powershell -ExecutionPolicy Bypass -File scripts\\build-assets.ps1',
       );
     }
     const targetDir = path.join(resRoot, `drawable-${density}`);

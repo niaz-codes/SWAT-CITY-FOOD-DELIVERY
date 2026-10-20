@@ -3,11 +3,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 /**
  * Centralized API client for the Swat City backend.
  *
- * Base URL is resolved from EXPO_PUBLIC_API_URL (set it to your LAN IP or a
- * production host). The default targets the Android emulator's host loopback.
- * Configure via backend/.env on your machine and .env in the mobile root.
+ * Base URL comes from EXPO_PUBLIC_API_URL, which is inlined at build time
+ * (eas.json `env` for EAS builds, .env for local runs). The fallback is the
+ * production backend so a missing variable degrades to "live but misconfigured"
+ * rather than shipping a dead emulator/loopback URL to a real device.
  */
-export const API_BASE_URL = (process.env.EXPO_PUBLIC_API_URL ?? 'http://10.0.2.2:4000/api').replace(/\/+$/, '');
+export const API_BASE_URL = (
+  process.env.EXPO_PUBLIC_API_URL ?? 'https://backend-production-73f5.up.railway.app/api'
+).replace(/\/+$/, '');
 
 const TOKENS_KEY = '@swat/tokens';
 const REQUEST_TIMEOUT_MS = 12_000;
@@ -69,6 +72,76 @@ export async function setApiTokens(tokens: ApiTokens | null): Promise<void> {
   }
 }
 
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function base64UrlDecode(segment: string): string {
+  let output = '';
+  let buffer = 0;
+  let bits = 0;
+  for (const ch of segment.replace(/-/g, '+').replace(/_/g, '/')) {
+    if (ch === '=') break;
+    const idx = B64_CHARS.indexOf(ch);
+    if (idx === -1) continue;
+    buffer = (buffer << 6) | idx;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output += String.fromCharCode((buffer >> bits) & 0xff);
+    }
+  }
+  return output;
+}
+
+/**
+ * Reads the `exp` claim from a JWT without verifying it. The signature is the
+ * backend's business; the client only needs to know whether the token it is
+ * about to send has already expired, so it can drop the session instead of
+ * firing doomed requests. A non-JWT token returns null and is left for the
+ * server to accept or reject.
+ */
+function jwtExpiryMs(token: string): number | null {
+  const segments = token.split('.');
+  if (segments.length !== 3) return null;
+  const match = /"exp"\s*:\s*(\d+)/.exec(base64UrlDecode(segments[1]));
+  return match ? Number(match[1]) * 1000 : null;
+}
+
+export async function getAccessTokenExpiry(): Promise<number | null> {
+  const token = await getAccessToken();
+  return token ? jwtExpiryMs(token) : null;
+}
+
+/**
+ * True when there is no usable access token, or the one on disk has expired.
+ * The backend issues short-lived access tokens, so this is what distinguishes
+ * "signed in" from "still holding a dead session".
+ */
+export async function isAccessTokenExpired(): Promise<boolean> {
+  const token = await getAccessToken();
+  if (!token) return true;
+  const exp = jwtExpiryMs(token);
+  return exp === null ? false : Date.now() >= exp;
+}
+
+type SessionExpiredListener = () => void;
+const sessionExpiredListeners = new Set<SessionExpiredListener>();
+
+/**
+ * Lets the auth layer react to a rejected token without this module importing
+ * React or the navigator. Returns an unsubscribe function.
+ */
+export function onSessionExpired(listener: SessionExpiredListener): () => void {
+  sessionExpiredListeners.add(listener);
+  return () => {
+    sessionExpiredListeners.delete(listener);
+  };
+}
+
+async function dropExpiredSession(): Promise<void> {
+  await setApiTokens(null);
+  for (const listener of sessionExpiredListeners) listener();
+}
+
 type ApiEnvelope = {
   success?: boolean;
   data?: unknown;
@@ -81,7 +154,10 @@ type ExecuteResult = {
   body: ApiEnvelope | null;
 };
 
-async function execute(rawUrl: string, init: RequestInit & { signal?: AbortSignal }): Promise<ExecuteResult> {
+async function execute(
+  rawUrl: string,
+  init: RequestInit & { signal?: AbortSignal },
+): Promise<ExecuteResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -99,7 +175,9 @@ async function execute(rawUrl: string, init: RequestInit & { signal?: AbortSigna
   } catch (error) {
     const timedOut = (error as Error)?.name === 'AbortError';
     throw new ApiError(
-      timedOut ? 'The request timed out. Please try again.' : 'Network unreachable. Check your connection.',
+      timedOut
+        ? 'The request timed out. Please try again.'
+        : 'Network unreachable. Check your connection.',
       undefined,
       'network',
     );
@@ -121,7 +199,10 @@ async function request<T>(
   auth = true,
 ): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = { Accept: 'application/json' };
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  // FormData must set its own multipart boundary, so Content-Type is left to
+  // fetch for uploads instead of being forced to JSON.
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  if (body !== undefined && !isFormData) headers['Content-Type'] = 'application/json';
   if (auth) {
     const token = await getAccessToken();
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -132,7 +213,7 @@ async function request<T>(
   const init: RequestInit & { signal?: AbortSignal } = {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body === undefined ? undefined : isFormData ? (body as FormData) : JSON.stringify(body),
   };
 
   let result: ExecuteResult;
@@ -148,6 +229,14 @@ async function request<T>(
   }
 
   const { httpStatus, body: json } = result;
+  // A 401 alone does not mean the session died: the backend also returns it
+  // for ordinary authorization failures. Only a token that is actually past its
+  // own `exp` may clear the session, otherwise a single forbidden call would
+  // sign the user out moments after a successful sign-in.
+  if (httpStatus === 401 && auth && (await isAccessTokenExpired())) {
+    await dropExpiredSession();
+    throw new ApiError(json?.message ?? 'Your session has expired. Please sign in again.', 401);
+  }
   if (json && json.success === false) {
     throw new ApiError(json.message ?? 'Request failed', httpStatus);
   }
@@ -161,7 +250,22 @@ async function request<T>(
   };
 }
 
-export const httpGet = <T = unknown>(path: string, auth = true) => request<T>(path, 'GET', undefined, auth);
-export const httpPost = <T = unknown>(path: string, body?: unknown, auth = true) => request<T>(path, 'POST', body, auth);
-export const httpPatch = <T = unknown>(path: string, body?: unknown, auth = true) => request<T>(path, 'PATCH', body, auth);
-export const httpDelete = <T = unknown>(path: string, auth = true) => request<T>(path, 'DELETE', undefined, auth);
+export const httpGet = <T = unknown>(path: string, auth = true) =>
+  request<T>(path, 'GET', undefined, auth);
+export const httpPost = <T = unknown>(path: string, body?: unknown, auth = true) =>
+  request<T>(path, 'POST', body, auth);
+export const httpPatch = <T = unknown>(path: string, body?: unknown, auth = true) =>
+  request<T>(path, 'PATCH', body, auth);
+export const httpDelete = <T = unknown>(path: string, auth = true) =>
+  request<T>(path, 'DELETE', undefined, auth);
+
+/**
+ * Multipart upload helper. `body` is forwarded as-is so fetch can set the
+ * multipart boundary; never pass a plain object here.
+ */
+export const httpUpload = <T = unknown>(
+  path: string,
+  body: FormData,
+  method: 'POST' | 'PATCH' = 'POST',
+  auth = true,
+) => request<T>(path, method, body, auth);

@@ -22,6 +22,7 @@
       ],
       "./plugins/withPushNotifications",
       "./plugins/withAndroidReleaseSigning",
+      "./plugins/withGoogleServices",
       [
         "expo-notifications",
         {
@@ -40,11 +41,26 @@
           }
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Swat City to read a photo so admin can verify a rider's documents.",
+          "cameraPermission": "Allow Swat City to use the camera to take your partner photo."
+        }
+      ]
     ],
     "android": {
       "package": "com.swatcity.delivery",
+      "versionCode": 1,
       "softwareKeyboardLayoutMode": "resize",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "CAMERA",
+        "POST_NOTIFICATIONS",
+        "VIBRATE"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0E3F3A",
@@ -53,12 +69,18 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.swatcity.delivery"
+      "bundleIdentifier": "com.swatcity.delivery",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Your location is shared with the customer while you are delivering, and with admin support, so they can find you.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Your location is shared with the customer while you are delivering, and with admin support, so they can find you.",
+        "NSCameraUsageDescription": "Swat City uses the camera to take your partner photo when you register as a rider."
+      }
     },
     "extra": {
       "eas": {
         "projectId": "93e97be7-9fd3-4024-8241-be6538a96051"
-      }
+      },
+      "googleClientId": "1019685188122-j2laq0i2v683bt4bu9j9o68ms7npthsq.apps.googleusercontent.com"
     },
     "owner": "niazkhan4371"
   }
