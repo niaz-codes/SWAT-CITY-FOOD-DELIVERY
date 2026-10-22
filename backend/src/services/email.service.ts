@@ -1,17 +1,20 @@
 // ============================================================
-// Swat City Backend - Brevo transactional email (SMTP)
-// Password reset / security mails. Credentials live only in backend env vars.
-// Nothing sensitive (SMTP password or reset token) is ever logged.
+// Swat City Backend - transactional email over SMTP
+//
+// OPTIONAL. Email OTP codes (login / register / reset) are generated,
+// delivered and verified by SUPABASE AUTH — see `otp.service.ts`. This SMTP
+// transport is only used for the "your password was changed" security notice,
+// so leaving the SMTP_ vars blank costs that notice and nothing else.
+// Credentials live only in backend env vars and are never logged.
 // ============================================================
 
 import nodemailer, { type Transporter } from 'nodemailer';
-import { env, brevoConfigured } from '../config/env';
+import { env, smtpConfigured } from '../config/env';
 
 let transporter: Transporter | null = null;
-let verified = false;
 
 const BRAND = {
-  name: env.BREVO_FROM_NAME || 'Swat City Food Delivery',
+  name: env.SMTP_FROM_NAME || 'Swat City Food Delivery',
   teal: '#0E9488',
   deepTeal: '#0B554E',
   ink: '#0F1A19',
@@ -21,19 +24,24 @@ const BRAND = {
 };
 
 function getTransport(): Transporter | null {
-  if (!brevoConfigured) return null;
+  if (!smtpConfigured) return null;
   if (transporter) return transporter;
 
   transporter = nodemailer.createTransport({
-    host: env.BREVO_SMTP_HOST || 'smtp-relay.brevo.com',
-    port: env.BREVO_SMTP_PORT || 587,
+    host: env.SMTP_HOST,
+    port: env.SMTP_PORT,
     // 587 = STARTTLS. Never `secure: true` unless you move to port 465.
-    secure: (env.BREVO_SMTP_PORT || 587) === 465,
+    secure: (env.SMTP_PORT || 587) === 465,
     requireTLS: true,
     auth: {
-      user: env.BREVO_SMTP_USER,
-      pass: env.BREVO_SMTP_PASS,
+      user: env.SMTP_USER,
+      pass: env.SMTP_PASS,
     },
+    // Reuse authenticated connections across sends rather than paying a cold
+    // STARTTLS + AUTH handshake every time.
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 40,
     // Generous but bounded so a hung SMTP socket cannot stall a request.
     connectionTimeout: 15_000,
     greetingTimeout: 15_000,
@@ -43,35 +51,17 @@ function getTransport(): Transporter | null {
   return transporter;
 }
 
-/**
- * Confirms Brevo accepts our credentials + the from address is verified.
- * Called once at boot; a failure downgrades to console-only logging.
- */
-export async function verifyEmailTransport(): Promise<boolean> {
-  const t = getTransport();
-  if (!t) return false;
-  try {
-    await t.verify();
-    verified = true;
-    // eslint-disable-next-line no-console
-    console.log('[email] Brevo SMTP connection verified');
-    return true;
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('[email] Brevo SMTP verification failed:', (error as Error).message);
-    return false;
-  }
-}
-
-export function isEmailConfigured(): boolean {
-  return brevoConfigured;
-}
-
 // ---------------------------------------------------------------------------
 // Templates
 // ---------------------------------------------------------------------------
 
-function layout(opts: { title: string; preheader: string; ctaLabel?: string; ctaUrl?: string; body: string }): string {
+function layout(opts: {
+  title: string;
+  preheader: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  body: string;
+}): string {
   const { title, preheader, ctaLabel, ctaUrl, body } = opts;
 
   const button =
@@ -105,7 +95,7 @@ function layout(opts: { title: string; preheader: string; ctaLabel?: string; cta
           <td style="background:linear-gradient(135deg,${BRAND.teal},${BRAND.deepTeal});padding:28px 32px;text-align:center;">
             <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
                         font-size:22px;font-weight:800;color:#ffffff;letter-spacing:.2px;">
-              Swat City
+              Swat City Food Delivery
             </div>
             <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
                         font-size:13px;color:rgba(255,255,255,.85);margin-top:4px;">
@@ -132,7 +122,7 @@ function layout(opts: { title: string; preheader: string; ctaLabel?: string; cta
         <tr>
           <td style="padding:0 32px 28px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
                      font-size:12px;line-height:1.6;color:#8A9998;">
-            ${ctaUrl ? 'The button above will open the reset screen inside the Swat City app.' : ''}
+            ${ctaUrl ? 'The button above will open the reset screen inside the Swat City Food Delivery app.' : ''}
             If the button does not work, copy this link into your browser:<br>
             ${ctaUrl ? `<span style="word-break:break-all;color:${BRAND.teal};">${ctaUrl}</span>` : ''}
           </td>
@@ -143,7 +133,7 @@ function layout(opts: { title: string; preheader: string; ctaLabel?: string; cta
                      font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
                      font-size:11px;line-height:1.6;color:#8A9998;text-align:center;">
             &copy; ${new Date().getFullYear()} ${BRAND.name}. Saidu Sharif, Swat, Pakistan.<br>
-            You are receiving this because a password reset was requested for your account.
+            You are receiving this because this action was requested for your account.
           </td>
         </tr>
       </table>
@@ -161,70 +151,6 @@ const shell = (html: string, text: string) => ({
 // Public send helpers
 // ---------------------------------------------------------------------------
 
-export async function sendPasswordResetEmail(opts: {
-  to: string;
-  name?: string;
-  resetUrl: string;
-  expiresInMinutes: number;
-}): Promise<boolean> {
-  const t = getTransport();
-  if (!t) {
-    // eslint-disable-next-line no-console
-    console.warn('[email] Brevo not configured — password reset email not sent');
-    return false;
-  }
-
-  const greeting = opts.name ? `Hi ${opts.name},` : 'Hi there,';
-
-  const { html, text } = shell(
-    layout({
-      title: 'Reset your Swat City password',
-      preheader: `This secure link expires in ${opts.expiresInMinutes} minutes.`,
-      ctaLabel: 'Reset password',
-      ctaUrl: opts.resetUrl,
-      body: `
-        <p style="margin:0 0 14px;">${greeting}</p>
-        <p style="margin:0 0 14px;">
-          We received a request to reset the password for your Swat City account.
-          Tap the button below to choose a new one.
-        </p>
-        <p style="margin:0 0 14px;">
-          This link is valid for <strong>${opts.expiresInMinutes} minutes</strong> and can only be used once.
-        </p>
-        <p style="margin:0;">
-          If you did not request this, you can safely ignore this email &mdash;
-          your password will stay exactly as it is.
-        </p>`,
-    }),
-    [
-      greeting,
-      '',
-      'We received a request to reset the password for your Swat City account.',
-      `Open this link to choose a new one (valid for ${opts.expiresInMinutes} minutes, single use):`,
-      opts.resetUrl,
-      '',
-      "If you didn't request this, ignore this email - your password stays unchanged.",
-    ].join('\n'),
-  );
-
-  try {
-    await t.sendMail({
-      from: { name: BRAND.name, address: env.BREVO_FROM_EMAIL as string },
-      to: opts.to,
-      subject: 'Reset your Swat City password',
-      ...shell(html, text),
-    });
-    // Deliberately logs the recipient + subject only, never the reset URL.
-    // eslint-disable-next-line no-console
-    console.log(`[email] password reset mail sent to ${maskEmail(opts.to)}`);
-    return true;
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('[email] password reset send failed:', (error as Error).message);
-    return false;
-  }
-}
-
 export async function sendPasswordChangedEmail(opts: {
   to: string;
   name?: string;
@@ -237,11 +163,11 @@ export async function sendPasswordChangedEmail(opts: {
   const { html, text } = shell(
     layout({
       title: 'Your password was changed',
-      preheader: 'A successful security notice for your Swat City account.',
+      preheader: 'A successful security notice for your Swat City Food Delivery account.',
       body: `
         <p style="margin:0 0 14px;">${greeting}</p>
         <p style="margin:0 0 14px;">
-          The password on your Swat City account was just changed successfully.
+          The password on your Swat City Food Delivery account was just changed successfully.
         </p>
         <p style="margin:0;">
           If this was not you, reset your password immediately and contact support.
@@ -250,16 +176,16 @@ export async function sendPasswordChangedEmail(opts: {
     [
       greeting,
       '',
-      'The password on your Swat City account was just changed successfully.',
-      "If this was not you, reset your password immediately and contact support.",
+      'The password on your Swat City Food Delivery account was just changed successfully.',
+      'If this was not you, reset your password immediately and contact support.',
     ].join('\n'),
   );
 
   try {
     await t.sendMail({
-      from: { name: BRAND.name, address: env.BREVO_FROM_EMAIL as string },
+      from: { name: BRAND.name, address: env.SMTP_FROM_EMAIL as string },
       to: opts.to,
-      subject: 'Your Swat City password was changed',
+      subject: 'Your Swat City Food Delivery password was changed',
       ...shell(html, text),
     });
     return true;
@@ -269,13 +195,3 @@ export async function sendPasswordChangedEmail(opts: {
     return false;
   }
 }
-
-/** Masks an address so logs stay safe while remaining useful. */
-function maskEmail(email: string): string {
-  const [local = '', domain = ''] = email.split('@');
-  if (!domain) return '***';
-  const head = local.slice(0, 2);
-  return `${head}${'*'.repeat(Math.max(local.length - 2, 1))}@${domain}`;
-}
-
-export const emailTemplates = { layout, shell };

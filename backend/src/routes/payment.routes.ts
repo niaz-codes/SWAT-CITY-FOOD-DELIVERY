@@ -2,14 +2,15 @@ import { Router } from 'express';
 import {
   abandonOrderPayment,
   createOrderPayment,
+  easypaisaNotify,
   getOrderPayment,
   jazzCashReturn,
   listPaymentMethods,
   renderGatewayHandoff,
-  switchToCashOrder,
   verifyOrderPayment,
 } from '../controllers/payment.controller';
 import { requireAuth, requireCustomer } from '../middleware/auth';
+import { paymentRateLimiter } from '../middleware/rateLimit';
 import { validate } from '../middleware/validate';
 import { initiatePaymentSchema } from '../validations/payment';
 
@@ -24,9 +25,13 @@ const router = Router();
 // --- Public (gateway-driven, no bearer token) ---------------------------------
 router.get('/jazzcash/return', jazzCashReturn);
 router.get('/handoff/:token', renderGatewayHandoff);
+// Easypaisa server notification + merchant redirect. POST and GET for tolerance;
+// the handler always re-inquires and never trusts the notification payload.
+router.get('/easypaisa/notify', easypaisaNotify);
+router.post('/easypaisa/notify', easypaisaNotify);
 
 // --- Authenticated customer ---------------------------------------------------
-router.use(requireAuth, requireCustomer);
+router.use(requireAuth, requireCustomer, paymentRateLimiter);
 
 router.get('/methods', listPaymentMethods);
 
@@ -34,6 +39,8 @@ router.post('/orders/:id/payment', validate(initiatePaymentSchema), createOrderP
 router.get('/orders/:id/payment', getOrderPayment);
 router.post('/orders/:id/payment/verify', verifyOrderPayment);
 router.post('/orders/:id/payment/abandon', abandonOrderPayment);
-router.post('/orders/:id/payment/cash', switchToCashOrder);
+// There is no `payment/cash` route. Switching an order off a gateway to cash
+// would let an unpaid order be treated as payable on delivery, so the only way
+// out of a failed payment is a fresh verified gateway payment.
 
 export default router;

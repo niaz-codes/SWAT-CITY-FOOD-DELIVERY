@@ -1,34 +1,58 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
+import { UserModel } from './User';
+import { RestaurantModel } from './Restaurant';
+import { OrderModel } from './Order';
+import { RideModel } from './Ride';
 
 export const REVIEW_TARGETS = ['restaurant', 'food', 'rider', 'ride'] as const;
 export type ReviewTarget = (typeof REVIEW_TARGETS)[number];
 
-const reviewSchema = new Schema(
-  {
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    targetType: { type: String, enum: REVIEW_TARGETS, required: true, index: true },
-    targetId: { type: Schema.Types.ObjectId, required: true, index: true },
+export interface Review {
+  _id: string;
 
-    // Only present for food/rider/ride reviews
-    restaurant: { type: Schema.Types.ObjectId, ref: 'Restaurant' },
-    order: { type: Schema.Types.ObjectId, ref: 'Order' },
-    ride: { type: Schema.Types.ObjectId, ref: 'Ride' },
-    rider: { type: Schema.Types.ObjectId, ref: 'User' },
+  user: string;
+  targetType: ReviewTarget;
+  targetId: string;
 
-    rating: { type: Number, required: true, min: 1, max: 5 },
-    title: { type: String },
-    comment: { type: String, trim: true, maxlength: 1000 },
+  // Only present for food/rider/ride reviews
+  restaurant?: string | null;
+  order?: string | null;
+  ride?: string | null;
+  rider?: string | null;
 
-    // For order-linked reviews it must be completed/cancelled before reviewing
-    verifiedPurchase: { type: Boolean, default: false },
+  rating: number;
+  title?: string | null;
+  comment?: string | null;
+
+  // For order-linked reviews it must be completed/cancelled before reviewing
+  verifiedPurchase: boolean;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const ReviewModel = defineModel<Review>({
+  table: 'reviews',
+  columns: [
+    'user',
+    'targetType',
+    'targetId',
+    'restaurant',
+    'order',
+    'ride',
+    'rider',
+    'rating',
+    'title',
+    'comment',
+    'verifiedPurchase',
+    'createdAt',
+    'updatedAt',
+  ],
+  refs: {
+    user: () => UserModel,
+    restaurant: () => RestaurantModel,
+    order: () => OrderModel,
+    ride: () => RideModel,
+    rider: () => UserModel,
   },
-  { timestamps: true },
-);
-
-// Prevent duplicate reviews on the same target by the same user.
-reviewSchema.index({ user: 1, targetType: 1, targetId: 1 }, { unique: true });
-reviewSchema.index({ targetType: 1, targetId: 1, createdAt: -1 });
-
-export type Review = InferSchemaType<typeof reviewSchema> & { _id: mongoose.Types.ObjectId };
-
-export const ReviewModel = mongoose.model('Review', reviewSchema);
+});

@@ -1,36 +1,61 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
+import { RestaurantModel } from './Restaurant';
 
-const foodItemSchema = new Schema(
-  {
-    restaurant: { type: Schema.Types.ObjectId, ref: 'Restaurant', required: true, index: true },
-    name: { type: String, required: true, trim: true, index: true },
-    description: { type: String },
-    category: { type: String, trim: true, index: true },
+export interface FoodItem {
+  _id: string;
 
-    price: { type: Number, required: true, min: 0 },
+  restaurant: string;
+  name: string;
+  description?: string | null;
+  category?: string | null;
 
-    emoji: { type: String },
-    imageUrl: { type: String },
-    imagePublicId: { type: String },
-    gradient: { type: [String], default: ['#0E9488', '#0E3F3A'] },
+  price: number;
 
-    rating: { type: Number, default: 0 },
-    reviewCount: { type: Number, default: 0 },
-    calories: { type: Number },
-    prepMin: { type: Number },
+  emoji?: string | null;
+  imageUrl?: string | null;
+  imagePublicId?: string | null;
+  gradient: string[];
 
-    popular: { type: Boolean, default: false },
-    available: { type: Boolean, default: true, index: true },
-    isVeg: { type: Boolean, default: false },
+  rating: number;
+  reviewCount: number;
+  calories?: number | null;
+  prepMin?: number | null;
 
-    deletedAt: { type: Date, default: null },
+  popular: boolean;
+  available: boolean;
+  isVeg: boolean;
+
+  deletedAt: Date | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const FoodItemModel = defineModel<FoodItem>({
+  table: 'food_items',
+  columns: [
+    'restaurant',
+    'name',
+    'description',
+    'category',
+    'price',
+    'emoji',
+    'imageUrl',
+    'imagePublicId',
+    'gradient',
+    'rating',
+    'reviewCount',
+    'calories',
+    'prepMin',
+    'popular',
+    'available',
+    'isVeg',
+    'deletedAt',
+    'createdAt',
+    'updatedAt',
+  ],
+  arrayCols: ['gradient'],
+  refs: {
+    restaurant: () => RestaurantModel,
   },
-  { timestamps: true },
-);
-
-foodItemSchema.index({ restaurant: 1, available: 1 });
-foodItemSchema.index({ popular: 1, available: 1 });
-
-export type FoodItem = InferSchemaType<typeof foodItemSchema> & { _id: mongoose.Types.ObjectId };
-
-export const FoodItemModel = mongoose.model('FoodItem', foodItemSchema);
+});

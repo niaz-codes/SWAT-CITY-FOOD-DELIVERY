@@ -48,15 +48,36 @@ export const myRides = asyncHandler(async (req: AuthRequest, res: Response) => {
   const query: Record<string, unknown> = { customer: req.user._id, deletedAt: null };
   if (status) query.status = status;
   const [rides, total] = await Promise.all([
-    RideModel.find(query).sort({ createdAt: -1 }).skip((p - 1) * l).limit(l).lean(),
+    RideModel.find(query)
+      .sort({ createdAt: -1 })
+      .skip((p - 1) * l)
+      .limit(l)
+      .lean(),
     RideModel.countDocuments(query),
   ]);
   sendSuccess(res, { rides }, { page: p, limit: l, total });
 });
 
+/**
+ * Rider-only feed of rides still waiting for a rider. This is the REST
+ * counterpart of the ride:request socket broadcast — a rider who lands on the
+ * screen late still sees the same pool of live 'searching' rides.
+ */
+export const availableRides = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const rides = await RideModel.find({ status: 'searching', rider: null, deletedAt: null })
+    .sort({ createdAt: -1 })
+    .limit(20)
+    .populate('customer', 'name')
+    .lean();
+  sendSuccess(res, { rides });
+});
+
 export const rideDetail = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const ride = await RideModel.findById(req.params.id).populate('rider', 'name phone avatarUrl').lean();
+  const ride = await RideModel.findById(req.params.id)
+    .populate('rider', 'name phone avatarUrl')
+    .lean();
   if (!ride) throw NOT_FOUND('Ride');
   if (String(ride.customer) !== req.user._id && String(ride.rider) !== req.user._id) {
     throw new AppError('You can only access rides you are part of', 403);

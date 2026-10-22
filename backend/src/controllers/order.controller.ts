@@ -47,7 +47,7 @@ export const quoteOrder = asyncHandler(async (req: AuthRequest, res: Response) =
     tip: totals.tip,
     total: totals.total,
     currency: 'PKR',
-    itemCount: totals.items.reduce((n, i) => n + i.quantity, 0),
+    itemCount: totals.items.reduce((n: number, i: any) => n + i.quantity, 0),
     estimatedMinutes: totals.estimatedMinutes,
     restaurant: {
       id: totals.restaurant._id,
@@ -70,6 +70,7 @@ export const createOrder = asyncHandler(async (req: AuthRequest, res: Response) 
     promoCode: req.body.promoCode,
     tip: req.body.tip,
     note: req.body.note,
+    idempotencyKey: req.body.idempotencyKey,
   });
 
   // Online wallets are started AFTER the order exists, so the transaction is

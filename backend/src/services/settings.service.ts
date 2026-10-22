@@ -1,6 +1,6 @@
 import { AppSettingModel } from '../models';
 
-export const DEFAULT_SETTINGS: Record<string, { value: unknown; label?: string }> = {
+const DEFAULT_SETTINGS: Record<string, { value: unknown; label?: string }> = {
   platform_fee: { value: 15, label: 'Flat platform fee per order (Rs)' },
   free_delivery_threshold: { value: 800, label: 'Free delivery minimum cart value (Rs)' },
   min_order_amount: { value: 150, label: 'Minimum order value (Rs)' },
@@ -24,12 +24,9 @@ export async function setSetting(key: string, value: unknown, label?: string): P
 
 export async function ensureDefaultSettings(): Promise<void> {
   await Promise.all(
-    Object.entries(DEFAULT_SETTINGS).map(([key, conf]) =>
-      AppSettingModel.updateOne(
-        { key },
-        { $setOnInsert: { key, ...conf } },
-        { upsert: true },
-      ),
-    ),
+    Object.entries(DEFAULT_SETTINGS).map(async ([key, conf]) => {
+      const existing = await AppSettingModel.exists({ key });
+      if (!existing) await AppSettingModel.create({ key, value: conf.value, label: conf.label });
+    }),
   );
 }

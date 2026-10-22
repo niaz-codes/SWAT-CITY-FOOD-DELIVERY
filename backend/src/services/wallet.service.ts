@@ -1,8 +1,9 @@
-import type { FilterQuery, Types } from 'mongoose';
+import { randomUUID } from 'crypto';
+import type { Filter } from '../db/model';
 import { WalletModel, WalletTransactionModel, type TxType } from '../models';
 import { AppError } from '../utils/AppError';
 
-export type TxKind = TxType;
+type TxKind = TxType;
 
 interface TxInput {
   reference?: string;
@@ -16,12 +17,19 @@ interface TxInput {
  * Get-or-create a wallet for a user. Customer wallets hold spendable balance,
  * rider wallets hold earnings. Both use the same ledger with the SAME rule:
  * every mutation writes a WalletTransaction.
+ *
+ * `holdsEarnings` is only applied when explicitly provided, so routine
+ * crediting of an existing rider wallet never flips its flag back to false.
  */
-export async function getOrCreateWallet(userId: string, holdsEarnings = false) {
+export async function getOrCreateWallet(userId: string, holdsEarnings?: boolean) {
   let wallet = await WalletModel.findOne({ user: userId });
   if (!wallet) {
-    wallet = await WalletModel.create({ user: userId, holdsEarnings, balance: 0 });
-  } else if (wallet.holdsEarnings !== holdsEarnings) {
+    wallet = await WalletModel.create({
+      user: userId,
+      holdsEarnings: holdsEarnings ?? false,
+      balance: 0,
+    });
+  } else if (holdsEarnings !== undefined && wallet.holdsEarnings !== holdsEarnings) {
     wallet.holdsEarnings = holdsEarnings;
     await wallet.save();
   }
@@ -97,23 +105,59 @@ export async function debitWallet(
   return { wallet: updated, transaction: tx };
 }
 
-/** List a user's transactions, newest first (paginated). */
+/**
+ * Move money between two wallets. The sender is debited first (authoritative
+ * balance check), then the recipient credited. If the credit leg fails for any
+ * reason the debit is reversed with its own refund transaction, so both
+ * ledgers stay in balance and the audit trail explains the reversal. Both legs
+ * share the same `reference` so they can be correlated.
+ */
+export async function transferWallet(
+  fromUserId: string,
+  toUserId: string,
+  amount: number,
+  input: TxInput & { inboundDescription?: string } = {},
+) {
+  if (fromUserId === toUserId) throw new AppError('Cannot transfer to yourself', 422);
+  const reference = `xfer_${randomUUID()}`;
+  const { wallet: debited, transaction: outTx } = await debitWallet(fromUserId, amount, 'debit', {
+    reference,
+    description: input.description ?? 'Wallet transfer sent',
+    byUser: input.byUser,
+    metadata: { direction: 'out', toUserId },
+  });
+  try {
+    const { wallet: credited, transaction: inTx } = await creditWallet(toUserId, amount, 'credit', {
+      reference,
+      description: input.inboundDescription ?? 'Wallet transfer received',
+      byUser: input.byUser,
+      metadata: { direction: 'in', fromUserId },
+    });
+    return { debited, credited, outTx, inTx, reference };
+  } catch (error) {
+    await creditWallet(fromUserId, amount, 'refund', {
+      reference: `${reference}_reversal`,
+      description: 'Reversed failed transfer',
+      byUser: input.byUser,
+      metadata: { direction: 'in', reversed: true, reference },
+    });
+    throw error;
+  }
+}
 export async function listWalletTransactions(
   userId: string,
   page = 1,
   limit = 20,
   filter: { type?: TxType } = {},
 ) {
-  const query: FilterQuery<{ user: Types.ObjectId }> = { user: userId };
+  const query: Filter = { user: userId };
   if (filter.type) (query as Record<string, unknown>).type = filter.type;
   const [transactions, total] = await Promise.all([
-    WalletTransactionModel.find(query).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+    WalletTransactionModel.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
     WalletTransactionModel.countDocuments(query),
   ]);
   return { transactions, total };
-}
-
-export async function getWalletBalance(userId: string): Promise<number> {
-  const wallet = await getOrCreateWallet(userId);
-  return wallet.balance;
 }

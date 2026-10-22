@@ -25,7 +25,9 @@ export const getProfile = asyncHandler(async (req: AuthRequest, res: Response) =
   if (!user) throw new AppError('Not authorized', 401);
   const [profile, addresses] = await Promise.all([
     CustomerProfileModel.findOne({ user: user._id }).lean(),
-    AddressModel.find({ user: user._id, deletedAt: null }).sort({ isDefault: -1, createdAt: -1 }).lean(),
+    AddressModel.find({ user: user._id, deletedAt: null })
+      .sort({ isDefault: -1, createdAt: -1 })
+      .lean(),
   ]);
   sendSuccess(res, { profile: profile ?? null, addresses });
 });
@@ -45,7 +47,10 @@ export const updateProfile = asyncHandler(async (req: AuthRequest, res: Response
 
   // Mirrors updates to the shared User record.
   const { UserModel } = await import('../models');
-  await UserModel.updateOne({ _id: user._id }, { $set: { name: patch.name, email: patch.email, avatarUrl: patch.avatarUrl } });
+  await UserModel.updateOne(
+    { _id: user._id },
+    { $set: { name: patch.name, email: patch.email, avatarUrl: patch.avatarUrl } },
+  );
 
   sendSuccess(res, { profile: updatedProfile });
 });
@@ -56,7 +61,9 @@ export const updateProfile = asyncHandler(async (req: AuthRequest, res: Response
 
 export const listAddresses = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw new AppError('Not authorized', 401);
-  const addresses = await AddressModel.find({ user: req.user._id, deletedAt: null }).sort('-createdAt');
+  const addresses = await AddressModel.find({ user: req.user._id, deletedAt: null }).sort(
+    '-createdAt',
+  );
   sendSuccess(res, { addresses });
 });
 
@@ -145,11 +152,24 @@ export const listFavorites = asyncHandler(async (req: AuthRequest, res: Response
   const result = favorites.map((fav) => {
     if (fav.kind === 'restaurant') {
       const r = restMap.get(String(fav.refId));
-      return r ? { id: String(fav._id), kind: fav.kind, refId: String(fav.refId), name: r.name, subtitle: r.cuisine, rating: r.rating, gradient: r.gradient, emoji: r.emoji, savedAt: fav.createdAt } : null;
+      return r
+        ? {
+            id: String(fav._id),
+            kind: fav.kind,
+            refId: String(fav.refId),
+            name: r.name,
+            subtitle: r.cuisine,
+            rating: r.rating,
+            gradient: r.gradient,
+            emoji: r.emoji,
+            savedAt: fav.createdAt,
+          }
+        : null;
     }
     const f = foodMap.get(String(fav.refId));
     if (!f) return null;
-    const restaurant = f.restaurant as unknown as { name?: string; gradient?: string[]; emoji?: string } | undefined;
+    const restaurant = f.restaurant as unknown as
+      { name?: string; gradient?: string[]; emoji?: string } | undefined;
     return {
       id: String(fav._id),
       kind: fav.kind,
@@ -169,7 +189,12 @@ export const listFavorites = asyncHandler(async (req: AuthRequest, res: Response
 
 export const addFavorite = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw new AppError('Not authorized', 401);
-  const body = req.body as { kind?: 'restaurant' | 'food'; refId?: string; foodId?: string; restaurantId?: string };
+  const body = req.body as {
+    kind?: 'restaurant' | 'food';
+    refId?: string;
+    foodId?: string;
+    restaurantId?: string;
+  };
   let kind: 'restaurant' | 'food';
   let refId: string;
   if (body.foodId) {
@@ -232,7 +257,7 @@ export const getActivities = asyncHandler(async (req: AuthRequest, res: Response
     ...rides.map((r) => ({
       id: `r_${String(r._id)}`,
       kind: 'ride',
-      title: 'Swat City Ride',
+      title: 'Swat City Food Delivery Ride',
       subtitle: `${r.pickup?.address ?? 'Pickup'} → ${r.dropoff?.address ?? 'Dropoff'} · ${r.status}`,
       amount: r.fare,
       at: r.createdAt,
@@ -241,7 +266,10 @@ export const getActivities = asyncHandler(async (req: AuthRequest, res: Response
     ...txs.map((t) => ({
       id: `w_${String(t._id)}`,
       kind: 'payment',
-      title: t.type === 'credit' || t.type === 'refund' || t.type === 'earning' ? 'Wallet credit' : 'Wallet debit',
+      title:
+        t.type === 'credit' || t.type === 'refund' || t.type === 'earning'
+          ? 'Wallet credit'
+          : 'Wallet debit',
       subtitle: t.description ?? t.type,
       amount: t.amount,
       at: t.createdAt,
@@ -259,7 +287,11 @@ export const getActivities = asyncHandler(async (req: AuthRequest, res: Response
 export const createTicket = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw new AppError('Not authorized', 401);
   const { SupportTicketModel } = await import('../models');
-  const { subject, description, category } = req.body as { subject: string; description: string; category?: string };
+  const { subject, description, category } = req.body as {
+    subject: string;
+    description: string;
+    category?: string;
+  };
   const ticket = await SupportTicketModel.create({
     user: req.user._id,
     subject,
@@ -303,7 +335,9 @@ export const myReviews = asyncHandler(async (req: AuthRequest, res: Response) =>
 
 export const topOrderItems = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw new AppError('Not authorized', 401);
-  const items = await OrderItemModel.find({ order: { $in: await OrderModel.find({ customer: req.user._id }).select('_id').lean() } })
+  const items = await OrderItemModel.find({
+    order: { $in: await OrderModel.find({ customer: req.user._id }).select('_id').lean() },
+  })
     .sort('-quantity')
     .limit(10)
     .lean();

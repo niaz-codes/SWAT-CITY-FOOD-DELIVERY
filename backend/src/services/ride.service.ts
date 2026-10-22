@@ -1,17 +1,21 @@
-import { Types } from 'mongoose';
 import {
   RideModel,
+  WalletTransactionModel,
   type Ride,
   type RideStatus,
   type RideType,
 } from '../models';
 import { notifyUser } from './notification.service';
 import { creditWallet, debitWallet } from './wallet.service';
+import { assertRiderApproved } from './riderApproval.service';
 import { getIO, SOCKET_EVENTS } from '../sockets';
-import { AppError, CONFLICT, NOT_FOUND } from '../utils/AppError';
+import { CONFLICT, NOT_FOUND } from '../utils/AppError';
 import { haversineKm, humanId } from '../utils/tokens';
 
-export const FARE_TABLE: Record<RideType, { base: number; perKm: number; vehicle: 'bike' | 'rickshaw' | 'van' }> = {
+const FARE_TABLE: Record<
+  RideType,
+  { base: number; perKm: number; vehicle: 'bike' | 'rickshaw' | 'van' }
+> = {
   swat_moto: { base: 60, perKm: 22, vehicle: 'bike' },
   swat_city: { base: 90, perKm: 28, vehicle: 'rickshaw' },
   swat_van: { base: 140, perKm: 36, vehicle: 'van' },
@@ -33,7 +37,7 @@ export interface FareEstimate {
 export function computeFare(type: RideType, distanceKm: number, surge = 1): FareEstimate {
   const t = FARE_TABLE[type];
   const distanceFare = t.perKm * distanceKm;
-  const fare = Math.round((t.base + distanceFare) * surge / 10) * 10;
+  const fare = Math.round(((t.base + distanceFare) * surge) / 10) * 10;
   return {
     type,
     vehicle: t.vehicle,
@@ -46,7 +50,7 @@ export function computeFare(type: RideType, distanceKm: number, surge = 1): Fare
   };
 }
 
-export const RIDE_FLOW: Record<RideStatus, RideStatus[]> = {
+const RIDE_FLOW: Record<RideStatus, RideStatus[]> = {
   searching: ['accepted', 'cancelled'],
   accepted: ['arriving', 'cancelled'],
   arriving: ['started', 'cancelled'],
@@ -55,7 +59,7 @@ export const RIDE_FLOW: Record<RideStatus, RideStatus[]> = {
   cancelled: [],
 };
 
-export function canRideTransition(from: RideStatus, to: RideStatus): boolean {
+function canRideTransition(from: RideStatus, to: RideStatus): boolean {
   return RIDE_FLOW[from]?.includes(to) ?? false;
 }
 
@@ -123,12 +127,15 @@ export async function requestRide(input: {
 }
 
 export async function acceptRide(rideId: string, riderUserId: string): Promise<Ride> {
+  // Only an admin-approved rider may accept work.
+  await assertRiderApproved(riderUserId);
+
   const ride = await RideModel.findById(rideId);
   if (!ride) throw NOT_FOUND('Ride');
   if (ride.status !== 'searching') throw CONFLICT('Ride is no longer available');
   if (ride.rider) throw CONFLICT('Ride already has a rider');
 
-  ride.rider = new Types.ObjectId(riderUserId);
+  ride.rider = riderUserId as any;
   ride.status = 'accepted';
   ride.statusHistory.push({ status: 'accepted', note: `Rider ${riderUserId} accepted` });
   await ride.save();
@@ -156,63 +163,85 @@ export async function acceptRide(rideId: string, riderUserId: string): Promise<R
 export async function advanceRide(rideId: string, to: RideStatus, actorId: string): Promise<Ride> {
   const ride = await RideModel.findById(rideId);
   if (!ride) throw NOT_FOUND('Ride');
-  if (!canRideTransition(ride.status, to)) throw CONFLICT(`Cannot move ride from '${ride.status}' to '${to}'`);
+  const from = ride.status;
+  if (!canRideTransition(from, to)) throw CONFLICT(`Cannot move ride from '${from}' to '${to}'`);
 
-  ride.status = to;
-  ride.statusHistory.push({ status: to, note: `Updated to ${to}` });
-  await ride.save();
+  // Compare-and-set: only one concurrent request can move the ride out of its
+  // current status; the loser gets a conflict instead of re-running the
+  // completion side effects (wallet payout + fare debit) a second time.
+  const updated = await RideModel.findOneAndUpdate(
+    { _id: rideId, status: from },
+    { $set: { status: to } },
+    { new: true },
+  );
+  if (!updated) throw CONFLICT('Ride status changed concurrently. Refresh and try again.');
+  updated.statusHistory.push({ status: to, note: `Updated to ${to}` });
+  await updated.save();
 
   const io = getIO();
   io.emit(SOCKET_EVENTS.rideStatus, {
-    rideId: String(ride._id),
-    rideNumber: ride.rideNumber,
+    rideId: String(updated._id),
+    rideNumber: updated.rideNumber,
     status: to,
     timestamp: new Date().toISOString(),
   });
 
   // `arriving` is the "rider has reached the pickup point" state.
   if (to === 'arriving') {
-    const pickup = ride.pickup?.address ?? 'the pickup point';
-    await notifyUser(String(ride.customer), {
+    const pickup = updated.pickup?.address ?? 'the pickup point';
+    await notifyUser(String(updated.customer), {
       type: 'ride',
       event: 'ride_arrived',
-      refId: String(ride._id),
+      refId: String(updated._id),
       title: 'Your rider has arrived',
-      body: `Your ${ride.vehicle} is waiting at ${pickup}.`,
-      data: { rideId: String(ride._id), rideNumber: ride.rideNumber, status: to },
+      body: `Your ${updated.vehicle} is waiting at ${pickup}.`,
+      data: { rideId: String(updated._id), rideNumber: updated.rideNumber, status: to },
     });
   }
 
   if (to === 'completed') {
-    // Rider payout
-    if (ride.riderPayout > 0) {
-      await creditWallet(String(ride.rider), ride.riderPayout, 'earning', {
+    // Ledger-level idempotency on both money legs: the descriptions name the
+    // unique ride number, so a raced duplicate completion skips instead of
+    // paying the rider twice or charging the customer twice.
+    const earningDescription = `Earnings for ride ${updated.rideNumber}`;
+    const alreadyEarned = await WalletTransactionModel.findOne({
+      user: String(updated.rider),
+      type: 'earning',
+      description: earningDescription,
+    });
+    if (!alreadyEarned && updated.riderPayout > 0) {
+      await creditWallet(String(updated.rider), updated.riderPayout, 'earning', {
         reference: 'ride',
         referenceModel: 'Ride',
-        description: `Earnings for ride ${ride.rideNumber}`,
+        description: earningDescription,
         byUser: actorId,
       });
     }
     // Collect fare from customer wallet if chosen
-    if (ride.paymentMethod === 'wallet' && ride.fare > 0) {
-      await debitWallet(String(ride.customer), ride.fare, 'debit', {
+    const fareDescription = `Fare for ride ${updated.rideNumber}`;
+    const alreadyCharged = await WalletTransactionModel.findOne({
+      user: String(updated.customer),
+      description: fareDescription,
+    });
+    if (!alreadyCharged && updated.paymentMethod === 'wallet' && updated.fare > 0) {
+      await debitWallet(String(updated.customer), updated.fare, 'debit', {
         reference: 'ride',
         referenceModel: 'Ride',
-        description: `Fare for ride ${ride.rideNumber}`,
+        description: fareDescription,
         byUser: actorId,
       });
     }
-    await notifyUser(String(ride.customer), {
+    await notifyUser(String(updated.customer), {
       type: 'ride',
       event: 'ride_completed',
-      refId: String(ride._id),
+      refId: String(updated._id),
       title: 'Ride completed',
-      body: `Your ride to ${ride.dropoff?.address ?? 'destination'} is complete. Total: Rs ${ride.fare}.`,
-      data: { rideId: String(ride._id), rideNumber: ride.rideNumber, status: 'completed' },
+      body: `Your ride to ${updated.dropoff?.address ?? 'destination'} is complete. Total: Rs ${updated.fare}.`,
+      data: { rideId: String(updated._id), rideNumber: updated.rideNumber, status: 'completed' },
     });
   }
 
-  return ride;
+  return updated;
 }
 
 export async function cancelRide(input: {
@@ -227,7 +256,10 @@ export async function cancelRide(input: {
     throw CONFLICT(`Ride is already ${ride.status}`);
   }
   ride.status = 'cancelled';
-  ride.statusHistory.push({ status: 'cancelled', note: `Cancelled by ${input.by}: ${input.reason}` });
+  ride.statusHistory.push({
+    status: 'cancelled',
+    note: `Cancelled by ${input.by}: ${input.reason}`,
+  });
   ride.cancelReason = input.reason;
   ride.cancelledBy = input.by;
   await ride.save();

@@ -23,6 +23,7 @@ import {
   requestVehicleChange,
   setRiderBaseLocation,
 } from '../services/riderVehicle.service';
+import { assertRiderApproved } from '../services/riderApproval.service';
 
 export const getRiderProfile = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
@@ -175,6 +176,10 @@ export const myDocuments = asyncHandler(async (req: AuthRequest, res: Response) 
  */
 export const riderFeed = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
+  // The feed carries customer drop-off addresses, so it is work data: only an
+  // admin-approved rider may read it. Without this gate a pending or rejected
+  // applicant could still harvest live delivery addresses.
+  await assertRiderApproved(String(req.user._id));
   const profile = await RiderProfileModel.findOne({ user: req.user._id }).lean();
   if (!profile) throw NOT_FOUND('Rider profile');
 

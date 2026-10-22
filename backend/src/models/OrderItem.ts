@@ -1,25 +1,45 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
+import { OrderModel } from './Order';
+import { FoodItemModel } from './FoodItem';
+import { RestaurantModel } from './Restaurant';
 
 // OrderItem is a standalone lookupable model. Production orders snapshot their
 // own order.items, but keeping items indexed by foodItem powers admin analytics.
-const orderItemSchema = new Schema(
-  {
-    order: { type: Schema.Types.ObjectId, ref: 'Order', required: true, index: true },
-    foodItem: { type: Schema.Types.ObjectId, ref: 'FoodItem' },
-    restaurant: { type: Schema.Types.ObjectId, ref: 'Restaurant', index: true },
-    name: { type: String, required: true },
-    quantity: { type: Number, required: true, min: 1 },
-    price: { type: Number, required: true },
-    emoji: { type: String },
-    note: { type: String },
+
+export interface OrderItem {
+  _id: string;
+
+  order: string;
+  foodItem?: string | null;
+  restaurant?: string | null;
+
+  name: string;
+  quantity: number;
+  price: number;
+  emoji?: string | null;
+  note?: string | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const OrderItemModel = defineModel<OrderItem>({
+  table: 'order_items',
+  columns: [
+    'order',
+    'foodItem',
+    'restaurant',
+    'name',
+    'quantity',
+    'price',
+    'emoji',
+    'note',
+    'createdAt',
+    'updatedAt',
+  ],
+  refs: {
+    order: () => OrderModel,
+    foodItem: () => FoodItemModel,
+    restaurant: () => RestaurantModel,
   },
-  { timestamps: true },
-);
-
-orderItemSchema.index({ foodItem: 1, createdAt: -1 });
-
-export type OrderItem = InferSchemaType<typeof orderItemSchema> & {
-  _id: mongoose.Types.ObjectId;
-};
-
-export const OrderItemModel = mongoose.model('OrderItem', orderItemSchema);
+});

@@ -1,15 +1,11 @@
 import type { Response } from 'express';
-import {
-  FoodCategoryModel,
-  FoodItemModel,
-  RestaurantModel,
-} from '../models';
+import { FoodCategoryModel, FoodItemModel, RestaurantModel } from '../models';
 import type { AuthRequest } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
 import { AppError, NOT_FOUND, UNAUTHORIZED } from '../utils/AppError';
 import { paginationMeta } from '../utils/helpers';
-import { uploadFile } from '../services/cloudinary.service';
+import { uploadToCloudinary } from '../services/cloudinary.service';
 
 // ---------------------------------------------------------------------------
 // Restaurants
@@ -24,7 +20,11 @@ export const adminListRestaurants = asyncHandler(async (req: AuthRequest, res: R
   const p = Math.max(1, Number(page) || 1);
   const l = Math.min(100, Math.max(1, Number(limit) || 20));
   const [restaurants, total] = await Promise.all([
-    RestaurantModel.find(query).sort({ createdAt: -1 }).skip((p - 1) * l).limit(l).lean(),
+    RestaurantModel.find(query)
+      .sort({ createdAt: -1 })
+      .skip((p - 1) * l)
+      .limit(l)
+      .lean(),
     RestaurantModel.countDocuments(query),
   ]);
   sendSuccess(res, { restaurants }, paginationMeta(p, l, total));
@@ -53,7 +53,11 @@ export const adminUpdateRestaurant = asyncHandler(async (req: AuthRequest, res: 
     delete update.lat;
     delete update.lng;
   }
-  const restaurant = await RestaurantModel.findOneAndUpdate({ _id: req.params.id }, { $set: update }, { new: true });
+  const restaurant = await RestaurantModel.findOneAndUpdate(
+    { _id: req.params.id },
+    { $set: update },
+    { new: true },
+  );
   if (!restaurant) throw NOT_FOUND('Restaurant');
   sendSuccess(res, { restaurant });
 });
@@ -66,14 +70,17 @@ export const adminDeleteRestaurant = asyncHandler(async (req: AuthRequest, res: 
     { new: true },
   );
   if (!restaurant) throw NOT_FOUND('Restaurant');
-  await FoodItemModel.updateMany({ restaurant: restaurant._id }, { $set: { deletedAt: new Date(), available: false } });
+  await FoodItemModel.updateMany(
+    { restaurant: restaurant._id },
+    { $set: { deletedAt: new Date(), available: false } },
+  );
   sendSuccess(res, { deleted: true });
 });
 
 export const adminUploadRestaurantImage = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
   if (!req.file) throw new AppError('Image file is required', 422);
-  const uploaded = await uploadFile(req.file, 'swat-city/restaurants');
+  const uploaded = await uploadToCloudinary(req.file, 'swat-city/restaurants');
   const restaurant = await RestaurantModel.findOneAndUpdate(
     { _id: req.params.id },
     { $set: { imageUrl: uploaded.url, imagePublicId: uploaded.publicId } },
@@ -95,7 +102,12 @@ export const adminListFoodItems = asyncHandler(async (req: AuthRequest, res: Res
   const p = Math.max(1, Number(page) || 1);
   const l = Math.min(100, Math.max(1, Number(limit) || 50));
   const [items, total] = await Promise.all([
-    FoodItemModel.find(query).populate('restaurant', 'name').sort({ createdAt: -1 }).skip((p - 1) * l).limit(l).lean(),
+    FoodItemModel.find(query)
+      .populate('restaurant', 'name')
+      .sort({ createdAt: -1 })
+      .skip((p - 1) * l)
+      .limit(l)
+      .lean(),
     FoodItemModel.countDocuments(query),
   ]);
   sendSuccess(res, { items }, paginationMeta(p, l, total));
@@ -104,7 +116,7 @@ export const adminListFoodItems = asyncHandler(async (req: AuthRequest, res: Res
 export const adminCreateFoodItem = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
   const { restaurantId, ...data } = req.body as Record<string, unknown>;
-  const restaurant = await RestaurantModel.findById(restaurantId);
+  const restaurant = await RestaurantModel.findById(String(restaurantId));
   if (!restaurant) throw NOT_FOUND('Restaurant');
   const item = await FoodItemModel.create({ ...data, restaurant: restaurant._id });
   sendSuccess(res, { item });
@@ -112,14 +124,22 @@ export const adminCreateFoodItem = asyncHandler(async (req: AuthRequest, res: Re
 
 export const adminUpdateFoodItem = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const item = await FoodItemModel.findOneAndUpdate({ _id: req.params.id }, { $set: req.body }, { new: true });
+  const item = await FoodItemModel.findOneAndUpdate(
+    { _id: req.params.id },
+    { $set: req.body },
+    { new: true },
+  );
   if (!item) throw NOT_FOUND('Food item');
   sendSuccess(res, { item });
 });
 
 export const adminDeleteFoodItem = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const item = await FoodItemModel.findOneAndUpdate({ _id: req.params.id }, { $set: { deletedAt: new Date(), available: false } }, { new: true });
+  const item = await FoodItemModel.findOneAndUpdate(
+    { _id: req.params.id },
+    { $set: { deletedAt: new Date(), available: false } },
+    { new: true },
+  );
   if (!item) throw NOT_FOUND('Food item');
   sendSuccess(res, { deleted: true });
 });
@@ -127,8 +147,12 @@ export const adminDeleteFoodItem = asyncHandler(async (req: AuthRequest, res: Re
 export const adminUploadFoodImage = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
   if (!req.file) throw new AppError('Image file is required', 422);
-  const uploaded = await uploadFile(req.file, 'swat-city/food');
-  const item = await FoodItemModel.findOneAndUpdate({ _id: req.params.id }, { $set: { imageUrl: uploaded.url, imagePublicId: uploaded.publicId } }, { new: true });
+  const uploaded = await uploadToCloudinary(req.file, 'swat-city/food');
+  const item = await FoodItemModel.findOneAndUpdate(
+    { _id: req.params.id },
+    { $set: { imageUrl: uploaded.url, imagePublicId: uploaded.publicId } },
+    { new: true },
+  );
   if (!item) throw NOT_FOUND('Food item');
   sendSuccess(res, { item, upload: uploaded });
 });
@@ -144,20 +168,33 @@ export const adminListCategories = asyncHandler(async (_req: AuthRequest, res: R
 
 export const adminCreateCategory = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const category = await FoodCategoryModel.create({ ...req.body, slug: String(req.body.name ?? '').toLowerCase().replace(/\s+/g, '-') });
+  const category = await FoodCategoryModel.create({
+    ...req.body,
+    slug: String(req.body.name ?? '')
+      .toLowerCase()
+      .replace(/\s+/g, '-'),
+  });
   sendSuccess(res, { category });
 });
 
 export const adminUpdateCategory = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const category = await FoodCategoryModel.findOneAndUpdate({ _id: req.params.id }, { $set: req.body }, { new: true });
+  const category = await FoodCategoryModel.findOneAndUpdate(
+    { _id: req.params.id },
+    { $set: req.body },
+    { new: true },
+  );
   if (!category) throw NOT_FOUND('Category');
   sendSuccess(res, { category });
 });
 
 export const adminDeleteCategory = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const category = await FoodCategoryModel.findOneAndUpdate({ _id: req.params.id }, { $set: { active: false } }, { new: true });
+  const category = await FoodCategoryModel.findOneAndUpdate(
+    { _id: req.params.id },
+    { $set: { active: false } },
+    { new: true },
+  );
   if (!category) throw NOT_FOUND('Category');
   sendSuccess(res, { deleted: true });
 });

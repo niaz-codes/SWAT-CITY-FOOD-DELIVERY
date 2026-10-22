@@ -1,18 +1,17 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
 
-export const FAVORITE_KINDS = ['restaurant', 'food'] as const;
+export interface Favorite {
+  _id: string;
 
-const favoriteSchema = new Schema(
-  {
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    kind: { type: String, enum: FAVORITE_KINDS, required: true },
-    refId: { type: Schema.Types.ObjectId, required: true },
-  },
-  { timestamps: true },
-);
+  user: string;
+  kind: string;
+  refId: string;
 
-favoriteSchema.index({ user: 1, kind: 1, refId: 1 }, { unique: true });
+  createdAt: Date;
+  updatedAt: Date;
+}
 
-export type Favorite = InferSchemaType<typeof favoriteSchema> & { _id: mongoose.Types.ObjectId };
-
-export const FavoriteModel = mongoose.model('Favorite', favoriteSchema);
+export const FavoriteModel = defineModel<Favorite>({
+  table: 'favorites',
+  columns: ['user', 'kind', 'refId', 'createdAt', 'updatedAt'],
+});

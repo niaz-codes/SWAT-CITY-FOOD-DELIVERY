@@ -38,4 +38,9 @@ export function availableGateways(): Array<{
 
 export * from './types';
 export { easypaisaProvider, normalizeMsisdn } from './easypaisa';
-export { jazzcashProvider, jazzCashSecureHash, verifyJazzCashReturnSignature, toPaisa } from './jazzcash';
+export {
+  jazzcashProvider,
+  jazzCashSecureHash,
+  verifyJazzCashReturnSignature,
+  toPaisa,
+} from './jazzcash';

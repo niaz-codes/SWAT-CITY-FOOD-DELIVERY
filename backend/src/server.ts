@@ -1,27 +1,30 @@
 import http from 'http';
 import { app, env } from './app';
 import { connectDB, disconnectDB } from './config/db';
-import { describeFirebaseStatus } from './config/firebase';
+import { smtpConfigured } from './config/env';
 import { describeExpoPushStatus } from './config/expoPush';
-import { cloudinaryConfigured } from './config/cloudinary';
-import { verifyEmailTransport } from './services/email.service';
+import { pingSupabase } from './config/supabase';
 import { initSocket } from './sockets';
-import { ensureAdmin, ensureDefaultSettings } from './services';
+import { ensureAdmin } from './services/seed.service';
+import { ensureDefaultSettings } from './services/settings.service';
 import { startPaymentExpirySweeper } from './services/paymentSweeper';
 
 async function start(): Promise<void> {
   await connectDB();
 
-  // Idempotent boot-time bootstrap: seeded admin + app settings.
+  // Idempotent boot-time bootstrap: the single admin account and the app
+  // settings. No demo business data is created.
   await ensureAdmin();
   await ensureDefaultSettings();
 
   const server = http.createServer(app);
   initSocket(server);
 
-  server.listen(env.PORT, () => {
+  server.listen(env.PORT, '0.0.0.0', () => {
     // eslint-disable-next-line no-console
-    console.log(`[server] Swat City backend listening on port ${env.PORT} (${env.NODE_ENV})`);
+    console.log(
+      `[server] Swat City Food Delivery backend listening on 0.0.0.0:${env.PORT} (${env.NODE_ENV})`,
+    );
   });
 
   // Surface integration health in the deploy logs so a misconfigured env var is
@@ -58,24 +61,21 @@ async function start(): Promise<void> {
 
 /** One-line status per integration. Logs configuration state only, no secrets. */
 async function reportIntegrations(): Promise<void> {
-  const firebase = describeFirebaseStatus();
   const expoPush = describeExpoPushStatus();
+  const supabaseOk = await pingSupabase();
 
   const lines = [
-    `[integrations] mongodb    : connected`,
-    `[integrations] cloudinary: ${cloudinaryConfigured ? 'configured' : 'MISSING'}`,
-    `[integrations] brevo     : ${(await verifyEmailTransport()) ? 'smtp ok' : 'SMTP NOT VERIFIED'}`,
-    // Expo Push is the primary transport for the Expo Go app; FCM only serves
-    // legacy FCM tokens, so its absence is informational, not a failure.
+    `[integrations] supabase  : ${supabaseOk ? 'ok' : 'MISSING/UNREACHABLE'}`,
+    // Delivery for every OTP email is configured in the Supabase dashboard
+    // (Authentication -> Emails -> SMTP Settings), not in this process.
+    `[integrations] email otp : supabase auth (check SMTP settings in the dashboard)`,
+    `[integrations] smtp      : ${smtpConfigured ? 'configured (password-changed notices)' : 'not configured (optional)'}`,
     `[integrations] expopush  : ${expoPush.enabled ? 'enabled' : 'DISABLED'}`,
-    `[integrations] fcm       : ${
-      !firebase.configured ? 'not configured (FCM tokens unsupported)' : firebase.ready ? 'ready' : 'INIT FAILED'
-    }`,
   ];
   // eslint-disable-next-line no-console
   console.log(lines.join('\n'));
 
-  if (!expoPush.enabled || !cloudinaryConfigured) {
+  if (!expoPush.enabled || !supabaseOk) {
     // eslint-disable-next-line no-console
     console.warn('[integrations] some services are not configured — see backend/.env.example');
   }

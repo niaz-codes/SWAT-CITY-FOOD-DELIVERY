@@ -3,11 +3,6 @@ import { z } from 'zod';
 const lat = z.number().min(-90).max(90);
 const lng = z.number().min(-180).max(180);
 
-export const locationSchema = z.object({
-  lat,
-  lng,
-});
-
 export const addressSchema = z.object({
   label: z.string().trim().max(60).optional(),
   full: z.string().trim().min(5, 'Address is too short').max(200),
@@ -25,4 +20,3 @@ export const updateProfileSchema = z.object({
 });
 
 export const createAddressSchema = addressSchema;
-export const updateAddressSchema = addressSchema.partial();

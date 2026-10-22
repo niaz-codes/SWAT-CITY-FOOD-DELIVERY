@@ -10,6 +10,7 @@ import rideRoutes from './ride.routes';
 import walletRoutes from './wallet.routes';
 import notificationRoutes from './notification.routes';
 import reviewRoutes from './review.routes';
+import placesRoutes from './places.routes';
 import adminRoutes from './admin.routes';
 import { isProduction } from '../config/env';
 
@@ -26,6 +27,7 @@ router.use('/rides', rideRoutes);
 router.use('/wallet', walletRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/reviews', reviewRoutes);
+router.use('/places', placesRoutes);
 router.use('/admin', adminRoutes);
 
 // A lightweight aggregated status used by mobile health dashboards.

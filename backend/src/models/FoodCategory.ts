@@ -1,20 +1,19 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
 
-const foodCategorySchema = new Schema(
-  {
-    name: { type: String, required: true, trim: true },
-    slug: { type: String, trim: true },
-    emoji: { type: String },
-    sortOrder: { type: Number, default: 0 },
-    active: { type: Boolean, default: true },
-  },
-  { timestamps: true },
-);
+export interface FoodCategory {
+  _id: string;
 
-foodCategorySchema.index({ name: 1 }, { unique: true });
+  name: string;
+  slug?: string | null;
+  emoji?: string | null;
+  sortOrder: number;
+  active: boolean;
 
-export type FoodCategory = InferSchemaType<typeof foodCategorySchema> & {
-  _id: mongoose.Types.ObjectId;
-};
+  createdAt: Date;
+  updatedAt: Date;
+}
 
-export const FoodCategoryModel = mongoose.model('FoodCategory', foodCategorySchema);
+export const FoodCategoryModel = defineModel<FoodCategory>({
+  table: 'food_categories',
+  columns: ['name', 'slug', 'emoji', 'sortOrder', 'active', 'createdAt', 'updatedAt'],
+});

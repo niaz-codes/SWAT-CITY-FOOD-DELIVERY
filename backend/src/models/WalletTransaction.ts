@@ -1,34 +1,52 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
+import { WalletModel } from './Wallet';
+import { UserModel } from './User';
 
 export const TX_TYPES = ['credit', 'debit', 'refund', 'earning', 'commission'] as const;
 export type TxType = (typeof TX_TYPES)[number];
 
-const walletTransactionSchema = new Schema(
-  {
-    wallet: { type: Schema.Types.ObjectId, ref: 'Wallet', required: true, index: true },
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+export interface WalletTransaction {
+  _id: string;
 
-    type: { type: String, enum: TX_TYPES, required: true, index: true },
-    amount: { type: Number, required: true, min: 0 },
-    balanceAfter: { type: Number, required: true },
+  wallet: string;
+  user: string;
 
-    // Free-form reference (order id, ride id, ride number, promo code...)
-    reference: { type: String },
-    referenceModel: { type: String },
-    description: { type: String },
+  type: TxType;
+  amount: number;
+  balanceAfter: number;
 
-    // Audit trail
-    byUser: { type: Schema.Types.ObjectId, ref: 'User' },
-    metadata: { type: Schema.Types.Mixed },
+  // Free-form reference (order id, ride id, ride number, promo code...)
+  reference?: string | null;
+  referenceModel?: string | null;
+  description?: string | null;
+
+  // Audit trail
+  byUser?: string | null;
+  metadata?: any;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const WalletTransactionModel = defineModel<WalletTransaction>({
+  table: 'wallet_transactions',
+  columns: [
+    'wallet',
+    'user',
+    'type',
+    'amount',
+    'balanceAfter',
+    'reference',
+    'referenceModel',
+    'description',
+    'byUser',
+    'metadata',
+    'createdAt',
+    'updatedAt',
+  ],
+  refs: {
+    wallet: () => WalletModel,
+    user: () => UserModel,
+    byUser: () => UserModel,
   },
-  { timestamps: true },
-);
-
-walletTransactionSchema.index({ user: 1, createdAt: -1 });
-walletTransactionSchema.index({ type: 1, createdAt: -1 });
-
-export type WalletTransaction = InferSchemaType<typeof walletTransactionSchema> & {
-  _id: mongoose.Types.ObjectId;
-};
-
-export const WalletTransactionModel = mongoose.model('WalletTransaction', walletTransactionSchema);
+});

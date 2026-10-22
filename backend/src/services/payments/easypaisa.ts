@@ -130,7 +130,9 @@ export const easypaisaProvider: PaymentProvider = {
       return {
         ok: false,
         code: responseCode || undefined,
-        reason: str(json.responseDesc) || `Easypaisa rejected the payment (code ${responseCode || 'unknown'})`,
+        reason:
+          str(json.responseDesc) ||
+          `Easypaisa rejected the payment (code ${responseCode || 'unknown'})`,
       };
     }
 
@@ -174,7 +176,10 @@ export const easypaisaProvider: PaymentProvider = {
       const settledAmount = num(json.transactionAmount);
       // A settled amount that differs from what we asked for is never a match,
       // even if the gateway says PAID. Fail closed and escalate.
-      if (Number.isFinite(settledAmount) && Math.abs(settledAmount - input.expectedAmountPkr) > 0.009) {
+      if (
+        Number.isFinite(settledAmount) &&
+        Math.abs(settledAmount - input.expectedAmountPkr) > 0.009
+      ) {
         return {
           status: 'failed',
           reason: `Amount mismatch: charged ${settledAmount} but expected ${input.expectedAmountPkr}`,

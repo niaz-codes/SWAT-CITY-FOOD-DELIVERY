@@ -109,9 +109,7 @@ function buildMessage(payload: ExpoPushPayload): Record<string, unknown> {
   };
 }
 
-async function postTickets(
-  tickets: Record<string, unknown>[],
-): Promise<TicketResponse[]> {
+async function postTickets(tickets: Record<string, unknown>[]): Promise<TicketResponse[]> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -147,9 +145,7 @@ export async function sendExpoPushNotification(
   if (!deviceToken || !expoPushConfigured()) return false;
 
   try {
-    const [ticket] = await postTickets([
-      { to: deviceToken, ...buildMessage(payload) },
-    ]);
+    const [ticket] = await postTickets([{ to: deviceToken, ...buildMessage(payload) }]);
     if (!ticket) return false;
 
     if (ticket.status === 'error') {

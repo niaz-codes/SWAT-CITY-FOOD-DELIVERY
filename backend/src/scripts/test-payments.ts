@@ -54,8 +54,14 @@ test('SecureHash excludes blank field values', () => {
 });
 
 test('SecureHash ignores field ordering (values sorted by ASCII)', () => {
-  const a = jazzCashSecureHash({ pp_Amount: '10000', pp_MerchantID: 'M1', pp_TxnCurrency: 'PKR' }, 'S');
-  const b = jazzCashSecureHash({ pp_TxnCurrency: 'PKR', pp_Amount: '10000', pp_MerchantID: 'M1' }, 'S');
+  const a = jazzCashSecureHash(
+    { pp_Amount: '10000', pp_MerchantID: 'M1', pp_TxnCurrency: 'PKR' },
+    'S',
+  );
+  const b = jazzCashSecureHash(
+    { pp_TxnCurrency: 'PKR', pp_Amount: '10000', pp_MerchantID: 'M1' },
+    'S',
+  );
   assert.strictEqual(a, b);
 });
 
@@ -79,7 +85,12 @@ test('SecureHash ignores non-pp_ fields', () => {
 });
 
 test('SecureHash is deterministic (same input, same output)', () => {
-  const fields = { pp_Version: '2.0', pp_TxnRefNo: 'REF1', pp_Amount: '10000', pp_TxnCurrency: 'PKR' };
+  const fields = {
+    pp_Version: '2.0',
+    pp_TxnRefNo: 'REF1',
+    pp_Amount: '10000',
+    pp_TxnCurrency: 'PKR',
+  };
   assert.strictEqual(jazzCashSecureHash(fields, 'SALT'), jazzCashSecureHash(fields, 'SALT'));
 });
 
@@ -159,9 +170,8 @@ test('rejects numbers that are not 03xx or too short', () => {
 // ---------------------------------------------------------------------------
 
 test('Easypaisa treats only 0000 as success', async () => {
-  const { EASYPAISA_SUCCESS_CODE, EASYPAISA_TERMINAL_FAILURES } = await import(
-    '../services/payments/types'
-  );
+  const { EASYPAISA_SUCCESS_CODE, EASYPAISA_TERMINAL_FAILURES } =
+    await import('../services/payments/types');
   assert.strictEqual(EASYPAISA_SUCCESS_CODE, '0000');
   // Terminal failures must all map to a hard failure, never to pending.
   for (const code of ['FAILED', 'EXPIRED', 'BLOCKED', 'REVERSED']) {

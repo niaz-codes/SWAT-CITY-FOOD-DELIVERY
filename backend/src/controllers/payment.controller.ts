@@ -13,11 +13,15 @@ import { AppError, NOT_FOUND, UNAUTHORIZED } from '../utils/AppError';
 import {
   abandonOnlinePayment,
   initiateOnlinePayment,
-  markCashOrderPending,
   verifyOnlinePayment,
 } from '../services/payment.service';
-import { availableGateways, jazzcashProvider, verifyJazzCashReturnSignature } from '../services/payments';
+import {
+  availableGateways,
+  jazzcashProvider,
+  verifyJazzCashReturnSignature,
+} from '../services/payments';
 import { createHandoffToken, readHandoffToken } from '../services/payments/handoffToken';
+import { creditTopupIfNeeded } from '../services/topup.service';
 import { env, publicApiUrl } from '../config/env';
 
 const GATEWAY_METHODS = GATEWAY_PAYMENT_METHODS;
@@ -41,7 +45,11 @@ export const createOrderPayment = asyncHandler(async (req: AuthRequest, res: Res
     throw new AppError('You can only pay for your own orders', 403);
   }
 
-  const { payment, order: updatedOrder, handoff } = await initiateOnlinePayment({
+  const {
+    payment,
+    order: updatedOrder,
+    handoff,
+  } = await initiateOnlinePayment({
     userId: String(req.user._id),
     orderId: String(order._id),
     method,
@@ -97,7 +105,8 @@ export const getOrderPayment = asyncHandler(async (req: AuthRequest, res: Respon
   }
 
   const payments = await PaymentModel.find({ order: order._id }).sort({ createdAt: -1 }).lean();
-  const active = payments.find((p) => p.status === 'processing' || p.status === 'pending') ?? payments[0];
+  const active =
+    payments.find((p: any) => p.status === 'processing' || p.status === 'pending') ?? payments[0];
 
   sendSuccess(res, {
     orderPaymentStatus: order.paymentStatus,
@@ -126,9 +135,10 @@ export const verifyOrderPayment = asyncHandler(async (req: AuthRequest, res: Res
     throw new AppError('You can only verify your own orders', 403);
   }
 
-  const payment = await PaymentModel.findOne({ order: order._id, method: { $in: [...GATEWAY_METHODS] } }).sort(
-    { createdAt: -1 },
-  );
+  const payment = await PaymentModel.findOne({
+    order: order._id,
+    method: { $in: [...GATEWAY_METHODS] },
+  }).sort({ createdAt: -1 });
   if (!payment || !payment.transactionRef || !isGatewayPaymentMethod(payment.method)) {
     throw new AppError('No online payment to verify for this order', 404);
   }
@@ -136,7 +146,11 @@ export const verifyOrderPayment = asyncHandler(async (req: AuthRequest, res: Res
   const method = payment.method;
   const transactionRef = payment.transactionRef;
 
-  const { payment: updated, order: updatedOrder, result } = await verifyOnlinePayment({
+  const {
+    payment: updated,
+    order: updatedOrder,
+    result,
+  } = await verifyOnlinePayment({
     transactionRef,
     method,
   });
@@ -171,7 +185,10 @@ export const abandonOrderPayment = asyncHandler(async (req: AuthRequest, res: Re
   if (String(order.customer) !== String(req.user._id)) {
     throw new AppError('You can only manage your own orders', 403);
   }
-  const payment = await PaymentModel.findOne({ order: order._id, status: { $in: ['pending', 'processing'] } }).sort({
+  const payment = await PaymentModel.findOne({
+    order: order._id,
+    status: { $in: ['pending', 'processing'] },
+  }).sort({
     createdAt: -1,
   });
   if (!payment) throw new AppError('No in-flight payment to abandon', 404);
@@ -180,21 +197,14 @@ export const abandonOrderPayment = asyncHandler(async (req: AuthRequest, res: Re
 });
 
 /**
- * POST /orders/:id/payment/cash — switch an unpaid order to cash on delivery.
- * Any in-flight wallet payment is cancelled so the two can never both settle.
+ * There is intentionally no "switch to cash on delivery" endpoint.
+ *
+ * It used to exist at POST /orders/:id/payment/cash and called
+ * markCashOrderPending(). That let an order with a failed or abandoned gateway
+ * payment be reclassified as payable-on-delivery, which means an order could be
+ * marked actionable without any money ever moving. A failed payment must instead
+ * be settled by a fresh verified gateway payment.
  */
-export const switchToCashOrder = asyncHandler(async (req: AuthRequest, res: Response) => {
-  if (!req.user) throw UNAUTHORIZED();
-  const order = await markCashOrderPending({ orderId: req.params.id, userId: String(req.user._id) });
-  sendSuccess(res, {
-    order: {
-      id: order._id,
-      orderNumber: order.orderNumber,
-      paymentMethod: order.paymentMethod,
-      paymentStatus: order.paymentStatus,
-    },
-  });
-});
 
 /**
  * GET /payments/handoff/:token — public, short-lived handoff page.
@@ -233,7 +243,7 @@ export const renderGatewayHandoff = asyncHandler(async (req: AuthRequest, res: R
     transactionRef: payment.transactionRef as string,
     amountPkr: payment.amount,
     orderNumber: order.orderNumber,
-    description: `Swat City Order ${order.orderNumber}`.slice(0, 100),
+    description: `Swat City Food Delivery Order ${order.orderNumber}`.slice(0, 100),
     returnUrl: env.PAYMENT_RETURN_URL || `${publicApiUrl}/api/payments/jazzcash/return`,
     customerPhone: String(customer?.phone ?? ''),
     customerEmail: String(customer?.email ?? ''),
@@ -298,38 +308,79 @@ function escapeHtml(value: string): string {
  */
 export const jazzCashReturn = asyncHandler(async (req: AuthRequest, res: Response) => {
   // The query string is attacker-controllable, so every value is coerced to a
-// string before it reaches the signature check.
-const returnFields: Record<string, string> = {};
-for (const [key, value] of Object.entries(req.query)) {
-  if (typeof value === 'string') returnFields[key] = value;
-}
+  // string before it reaches the signature check.
+  const returnFields: Record<string, string> = {};
+  for (const [key, value] of Object.entries(req.query)) {
+    if (typeof value === 'string') returnFields[key] = value;
+  }
 
-const signatureValid = verifyJazzCashReturnSignature(returnFields);
-const transactionRef = returnFields.pp_TxnRefNo;
+  const signatureValid = verifyJazzCashReturnSignature(returnFields);
+  const transactionRef = returnFields.pp_TxnRefNo;
 
-let status = 'unknown';
-let orderId = '';
+  let status = 'unknown';
+  let orderId = '';
 
-if (transactionRef) {
-  const payment = await PaymentModel.findOne({ transactionRef, method: 'jazzcash' });
-  if (payment) {
-    orderId = payment.order ? String(payment.order) : '';
-    if (!signatureValid) {
-      // Tampered or unverifiable return. Deliberately do NOT settle: the app will
-      // re-verify server-to-server and show the real state.
-      status = 'unverified';
-    } else {
-      try {
-        const { result } = await verifyOnlinePayment({ transactionRef, method: 'jazzcash' });
-        status = result.status;
-      } catch {
-        // A gateway hiccup must not lose the payer; the app polls /verify.
-        status = 'pending';
+  if (transactionRef) {
+    const payment = await PaymentModel.findOne({ transactionRef, method: 'jazzcash' });
+    if (payment) {
+      orderId = payment.order ? String(payment.order) : '';
+      if (!signatureValid) {
+        // Tampered or unverifiable return. Deliberately do NOT settle: the app will
+        // re-verify server-to-server and show the real state.
+        status = 'unverified';
+      } else {
+        try {
+          const { result } = await verifyOnlinePayment({ transactionRef, method: 'jazzcash' });
+          status = result.status;
+        } catch {
+          // A gateway hiccup must not lose the payer; the app polls /verify.
+          status = 'pending';
+        }
       }
     }
   }
-}
 
-const appRedirect = `swatcity://payment-result?orderId=${encodeURIComponent(orderId)}&status=${encodeURIComponent(status)}`;
-res.redirect(302, appRedirect);
+  const appRedirect = `swatcity://payment-result?orderId=${encodeURIComponent(orderId)}&status=${encodeURIComponent(status)}`;
+  res.redirect(302, appRedirect);
+});
+
+/**
+ * POST/GET /easypaisa/notify — public IPN / server notification endpoint.
+ *
+ * Easypaisa's server or the merchant's redirect hits this when a MA transaction
+ * completes. The wire spec handed to merchants is delivered separately by the
+ * Easypaisa team when IPN is enabled, so this endpoint stays deliberately
+ * tolerant: it only needs `orderId` (our `transactionRef`) to relocate the
+ * payment, then it re-inquires the gateway server-to-server and settles from
+ * the inquiry result — the notification body itself is never trusted to carry
+ * status or amount.
+ *
+ * Always answers 200 with the resulting state so the gateway stops retrying.
+ */
+export const easypaisaNotify = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const raw: Record<string, unknown> = { ...(req.query ?? {}), ...(req.body ?? {}) };
+  const transactionRef = typeof raw.orderId === 'string' ? raw.orderId.trim() : undefined;
+  if (!transactionRef) throw new AppError('Missing orderId', 400);
+
+  const payment = await PaymentModel.findOne({ transactionRef, method: 'easypaisa' });
+  if (!payment) throw NOT_FOUND('Payment');
+
+  // Terminal states need no gateway round-trip; repeating an already-paid ping is
+  // a no-op that still guarantees the wallet top-up got credited.
+  if (payment.status === 'paid' || payment.status === 'failed' || payment.status === 'cancelled') {
+    if (payment.status === 'paid' && payment.kind === 'topup') {
+      await creditTopupIfNeeded(payment!, payment.user as string);
+    }
+    sendSuccess(res, { ok: true, status: payment.status, idempotent: true });
+    return;
+  }
+
+  const { payment: settled, result } = await verifyOnlinePayment({
+    transactionRef,
+    method: 'easypaisa',
+  });
+  if (result.status === 'paid' && (settled as any)?.kind === 'topup') {
+    await creditTopupIfNeeded(settled as any, String((settled as any).user));
+  }
+  sendSuccess(res, { ok: true, status: result.status });
 });

@@ -1,5 +1,10 @@
 import { Router } from 'express';
-import { createReview, deleteReview, listReviewsForTarget, myReviews } from '../controllers/review.controller';
+import {
+  createReview,
+  deleteReview,
+  listReviewsForTarget,
+  myReviews,
+} from '../controllers/review.controller';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { reviewSchema } from '../validations/common';

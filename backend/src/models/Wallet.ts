@@ -1,17 +1,25 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
+import { UserModel } from './User';
 
 // One Wallet per user (customer for spending, rider for earnings).
 // balance must NEVER be mutated without a matching WalletTransaction.
-const walletSchema = new Schema(
-  {
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true, unique: true, index: true },
-    balance: { type: Number, default: 0, min: 0 },
-    holdsEarnings: { type: Boolean, default: false },
-    lastTransactionAt: { type: Date },
+
+export interface Wallet {
+  _id: string;
+
+  user: string;
+  balance: number;
+  holdsEarnings: boolean;
+  lastTransactionAt?: Date | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const WalletModel = defineModel<Wallet>({
+  table: 'wallets',
+  columns: ['user', 'balance', 'holdsEarnings', 'lastTransactionAt', 'createdAt', 'updatedAt'],
+  refs: {
+    user: () => UserModel,
   },
-  { timestamps: true },
-);
-
-export type Wallet = InferSchemaType<typeof walletSchema> & { _id: mongoose.Types.ObjectId };
-
-export const WalletModel = mongoose.model('Wallet', walletSchema);
+});

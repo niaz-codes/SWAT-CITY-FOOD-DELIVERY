@@ -1,62 +1,95 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
 
 export const RESTAURANT_STATUSES = ['closed', 'open', 'busy'] as const;
 export type RestaurantStatus = (typeof RESTAURANT_STATUSES)[number];
 
-const restaurantSchema = new Schema(
-  {
-    name: { type: String, required: true, trim: true, index: true },
-    slug: { type: String, unique: true, sparse: true },
-    description: { type: String },
+export interface RestaurantLocation {
+  type: string;
+  coordinates: number[];
+}
 
-    cuisine: { type: String, trim: true },
-    category: { type: String, trim: true, index: true },
-    tags: { type: [String], default: [] },
+export interface RestaurantHours {
+  open: string;
+  close: string;
+}
 
-    status: { type: String, enum: RESTAURANT_STATUSES, default: 'open', index: true },
-    featured: { type: Boolean, default: false },
+export interface Restaurant {
+  _id: string;
 
-    rating: { type: Number, default: 0, min: 0, max: 5 },
-    reviewCount: { type: Number, default: 0 },
+  name: string;
+  slug?: string | null;
+  description?: string | null;
 
-    deliveryTimeMin: { type: Number, default: 30 },
-    deliveryFee: { type: Number, default: 0 },
-    minOrder: { type: Number, default: 0 },
-    deliveryKM: { type: Number, default: 0 },
-    freeDelivery: { type: Boolean, default: false },
-    promo: { type: String },
+  cuisine?: string | null;
+  category?: string | null;
+  tags: string[];
 
-    imageUrl: { type: String },
-    imagePublicId: { type: String },
-    emoji: { type: String },
-    gradient: { type: [String], default: ['#0E9488', '#0E3F3A'] },
+  status: RestaurantStatus;
+  featured: boolean;
 
-    // Operational plus marketing contact info
-    ownerName: { type: String },
-    phone: { type: String },
-    addressLine: { type: String },
-    area: { type: String, index: true },
+  rating: number;
+  reviewCount: number;
 
-    location: {
-      type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], default: [0, 0] },
-    },
+  deliveryTimeMin: number;
+  deliveryFee: number;
+  minOrder: number;
+  deliveryKM: number;
+  freeDelivery: boolean;
+  promo?: string | null;
 
-    hours: {
-      open: { type: String, default: '09:00' },
-      close: { type: String, default: '23:00' },
-    },
+  imageUrl?: string | null;
+  imagePublicId?: string | null;
+  emoji?: string | null;
+  gradient: string[];
 
-    deletedAt: { type: Date, default: null },
-  },
-  { timestamps: true },
-);
+  // Operational plus marketing contact info
+  ownerName?: string | null;
+  phone?: string | null;
+  addressLine?: string | null;
+  area?: string | null;
 
-restaurantSchema.index({ location: '2dsphere' });
-restaurantSchema.index({ status: 1, featured: 1, createdAt: -1 });
+  location: RestaurantLocation;
 
-export type Restaurant = InferSchemaType<typeof restaurantSchema> & {
-  _id: mongoose.Types.ObjectId;
-};
+  hours: RestaurantHours;
 
-export const RestaurantModel = mongoose.model('Restaurant', restaurantSchema);
+  deletedAt: Date | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const RestaurantModel = defineModel<Restaurant>({
+  table: 'restaurants',
+  columns: [
+    'name',
+    'slug',
+    'description',
+    'cuisine',
+    'category',
+    'tags',
+    'status',
+    'featured',
+    'rating',
+    'reviewCount',
+    'deliveryTimeMin',
+    'deliveryFee',
+    'minOrder',
+    'deliveryKM',
+    'freeDelivery',
+    'promo',
+    'imageUrl',
+    'imagePublicId',
+    'emoji',
+    'gradient',
+    'ownerName',
+    'phone',
+    'addressLine',
+    'area',
+    'location',
+    'hours',
+    'deletedAt',
+    'createdAt',
+    'updatedAt',
+  ],
+  arrayCols: ['tags', 'gradient'],
+});

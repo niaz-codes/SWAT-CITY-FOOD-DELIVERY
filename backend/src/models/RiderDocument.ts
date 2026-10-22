@@ -1,26 +1,40 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel, type ModelApi } from '../db/model';
+import { RiderProfileModel } from './RiderProfile';
+import { UserModel } from './User';
 
-export const DOC_TYPES = ['cnic_front', 'cnic_back', 'license', 'vehicle_reg'] as const;
+export interface RiderDocument {
+  _id: string;
 
-const riderDocumentSchema = new Schema(
-  {
-    rider: { type: Schema.Types.ObjectId, ref: 'RiderProfile', required: true, index: true },
-    type: { type: String, enum: DOC_TYPES, required: true },
-    // Cloudinary public URL (not the API secret / raw URL).
-    url: { type: String, required: true },
-    publicId: { type: String },
-    status: { type: String, enum: ['pending', 'verified', 'rejected'], default: 'pending' },
-    reviewNote: { type: String },
-    reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
-    reviewedAt: { type: Date },
+  rider: string;
+  type: string;
+  // Supabase Storage public URL.
+  url: string;
+  publicId?: string | null;
+  status: string;
+  reviewNote?: string | null;
+  reviewedBy?: string | null;
+  reviewedAt?: Date | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const RiderDocumentModel: ModelApi<RiderDocument> = defineModel<RiderDocument>({
+  table: 'rider_documents',
+  columns: [
+    'rider',
+    'type',
+    'url',
+    'publicId',
+    'status',
+    'reviewNote',
+    'reviewedBy',
+    'reviewedAt',
+    'createdAt',
+    'updatedAt',
+  ],
+  refs: {
+    rider: () => RiderProfileModel,
+    reviewedBy: () => UserModel,
   },
-  { timestamps: true },
-);
-
-riderDocumentSchema.index({ rider: 1, type: 1 });
-
-export type RiderDocument = InferSchemaType<typeof riderDocumentSchema> & {
-  _id: mongoose.Types.ObjectId;
-};
-
-export const RiderDocumentModel = mongoose.model('RiderDocument', riderDocumentSchema);
+});

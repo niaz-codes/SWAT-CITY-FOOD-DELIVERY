@@ -1,14 +1,14 @@
 import { connectDB, disconnectDB } from './config/db';
-import { seedDemoData } from './services/seed.service';
+import { ensureAdmin } from './services/seed.service';
 
 /**
- * `npm run seed` — explicit command to populate demo data (admin is seeded on
- * every boot automatically; this adds restaurants + food items the first time).
+ * `npm run seed` — explicit bootstrap command. Ensures the single admin account
+ * exists (also done automatically on boot); no demo business data is seeded.
  */
 async function main(): Promise<void> {
   await connectDB();
   try {
-    await seedDemoData();
+    await ensureAdmin();
     // eslint-disable-next-line no-console
     console.log('[seed] Done.');
   } finally {

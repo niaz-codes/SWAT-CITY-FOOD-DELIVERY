@@ -24,8 +24,14 @@ export const createRestaurantSchema = z.object({
   lng: z.number().min(-180).max(180).optional(),
   hours: z
     .object({
-      open: z.string().regex(/^\d{2}:\d{2}$/).optional(),
-      close: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+      open: z
+        .string()
+        .regex(/^\d{2}:\d{2}$/)
+        .optional(),
+      close: z
+        .string()
+        .regex(/^\d{2}:\d{2}$/)
+        .optional(),
     })
     .optional(),
 });
@@ -64,7 +70,5 @@ export const createFoodCategorySchema = z.object({
   emoji: z.string().max(4).optional(),
   sortOrder: z.number().int().min(0).optional(),
 });
-
-export const updateFoodCategorySchema = createFoodCategorySchema.partial();
 
 export const idParamSchema = z.object({ id: mongoId });

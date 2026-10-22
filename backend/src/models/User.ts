@@ -1,35 +1,57 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
 
 export const USER_ROLES = ['customer', 'rider', 'admin'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
-const userSchema = new Schema(
-  {
-    role: { type: String, enum: USER_ROLES, required: true, index: true },
-    status: { type: String, enum: ['active', 'suspended'], default: 'active' },
+export const USER_STATUSES = ['active', 'suspended'] as const;
+export type UserStatus = (typeof USER_STATUSES)[number];
 
-    name: { type: String, trim: true },
-    email: { type: String, trim: true, lowercase: true, unique: true, sparse: true },
-    phone: { type: String, trim: true, unique: true, sparse: true },
+export interface User {
+  _id: string;
 
-    // Intentionally never returned by the API — password hash only.
-    password: { type: String, select: false },
+  role: UserRole;
+  status: UserStatus;
 
-    verified: { type: Boolean, default: false },
-    isApproved: { type: Boolean, default: false },
-    pendingApproval: { type: Boolean, default: false },
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
 
-    avatarUrl: { type: String },
-    deviceTokens: { type: [String], default: [] },
+  /** Intentionally never returned by the API — password hash only. */
+  password?: string | null;
 
-    lastLoginAt: { type: Date },
-    deletedAt: { type: Date, default: null },
-  },
-  { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } },
-);
+  verified: boolean;
+  isApproved: boolean;
+  pendingApproval: boolean;
 
-userSchema.index({ createdAt: 1 });
+  avatarUrl?: string | null;
+  deviceTokens: string[];
 
-export type User = InferSchemaType<typeof userSchema> & { _id: mongoose.Types.ObjectId };
+  lastLoginAt?: Date | null;
+  deletedAt?: Date | null;
 
-export const UserModel = mongoose.model('User', userSchema);
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const UserModel = defineModel<User>({
+  table: 'users',
+  columns: [
+    'role',
+    'status',
+    'name',
+    'email',
+    'phone',
+    'password',
+    'verified',
+    'isApproved',
+    'pendingApproval',
+    'avatarUrl',
+    'deviceTokens',
+    'lastLoginAt',
+    'deletedAt',
+    'createdAt',
+    'updatedAt',
+  ],
+  hidden: ['password'],
+  arrayCols: ['deviceTokens'],
+});

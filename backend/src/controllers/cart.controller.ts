@@ -1,6 +1,6 @@
 import type { Response } from 'express';
 import { CartModel, FoodItemModel, RestaurantModel } from '../models';
-import { Types } from 'mongoose';
+
 import type { AuthRequest } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
@@ -13,7 +13,7 @@ async function ensureCart(userId: string) {
 }
 
 type CartLine = {
-  foodItem: Types.ObjectId;
+  foodItem: string;
   name: string;
   price: number;
   emoji?: string;
@@ -37,7 +37,11 @@ export const addToCart = asyncHandler(async (req: AuthRequest, res: Response) =>
   if (!restaurant || restaurant.deletedAt) throw NOT_FOUND('Restaurant');
 
   const foodIds = items.map((i) => i.foodItem);
-  const foods = await FoodItemModel.find({ _id: { $in: foodIds }, available: true, deletedAt: null });
+  const foods = await FoodItemModel.find({
+    _id: { $in: foodIds },
+    available: true,
+    deletedAt: null,
+  });
   const foodMap = new Map(foods.map((f) => [String(f._id), f]));
   if (foods.length !== items.length) {
     throw new AppError('One or more items are not available', 422);
@@ -57,7 +61,7 @@ export const addToCart = asyncHandler(async (req: AuthRequest, res: Response) =>
       note: item.note,
     };
   });
-  cart.set('items', lines);
+  (cart as any).items = lines;
   cart.subtotal = sumLines(lines);
   await cart.save();
 
@@ -77,7 +81,11 @@ export const getCart = asyncHandler(async (req: AuthRequest, res: Response) => {
 
 export const updateCartItem = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw new AppError('Not authorized', 401);
-  const { foodItem, quantity, note } = req.body as { foodItem: string; quantity: number; note?: string };
+  const { foodItem, quantity, note } = req.body as {
+    foodItem: string;
+    quantity: number;
+    note?: string;
+  };
   const cart = await ensureCart(req.user._id);
   const line = cart.items.find((i) => String(i.foodItem) === foodItem);
   if (!line) throw NOT_FOUND('Cart item');
@@ -92,13 +100,11 @@ export const removeFromCart = asyncHandler(async (req: AuthRequest, res: Respons
   if (!req.user) throw new AppError('Not authorized', 401);
   const cart = await ensureCart(req.user._id);
   const before = cart.items.length;
-  cart.set(
-    'items',
-    cart.items.filter((i) => String(i.foodItem) !== req.params.id),
-  );
-  if (cart.items.length === before) throw NOT_FOUND('Cart item');
-  cart.subtotal = sumLines(cart.items as unknown as Array<{ price: number; quantity: number }>);
-  if (cart.items.length === 0) cart.restaurant = undefined;
+  const items = cart.items.filter((i: any) => String(i.foodItem) !== req.params.id);
+  if (items.length === before) throw NOT_FOUND('Cart item');
+  (cart as any).items = items;
+  cart.subtotal = sumLines(items as unknown as Array<{ price: number; quantity: number }>);
+  if (items.length === 0) (cart as any).restaurant = null;
   await cart.save();
   sendSuccess(res, { cart });
 });
@@ -106,9 +112,9 @@ export const removeFromCart = asyncHandler(async (req: AuthRequest, res: Respons
 export const clearCart = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw new AppError('Not authorized', 401);
   const cart = await ensureCart(req.user._id);
-  cart.set('items', []);
+  (cart as any).items = [];
   cart.subtotal = 0;
-  cart.restaurant = undefined;
+  (cart as any).restaurant = null;
   await cart.save();
   sendSuccess(res, { cart });
 });

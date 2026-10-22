@@ -1,37 +1,50 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
+import { UserModel } from './User';
 
-export const TICKET_STATUSES = ['open', 'in_progress', 'resolved', 'closed'] as const;
-export const TICKET_PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
+/** One message in the ticket thread (no `_id`). */
+export interface SupportTicketMessage {
+  from: string;
+  text: string;
+  at?: Date | null;
+}
 
-const supportTicketSchema = new Schema(
-  {
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    subject: { type: String, required: true, trim: true },
-    description: { type: String, required: true },
-    category: { type: String, default: 'general' } as unknown as string,
+export interface SupportTicket {
+  _id: string;
 
-    status: { type: String, enum: TICKET_STATUSES, default: 'open', index: true },
-    priority: { type: String, enum: TICKET_PRIORITIES, default: 'medium' },
+  user: string;
+  subject: string;
+  description: string;
+  category: string;
 
-    messages: [
-      {
-        _id: false,
-        from: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-        text: { type: String, required: true },
-        at: { type: Date, default: Date.now },
-      },
-    ],
+  status: string;
+  priority: string;
 
-    assignedTo: { type: Schema.Types.ObjectId, ref: 'User' },
-    resolvedAt: { type: Date },
+  messages: SupportTicketMessage[];
+
+  assignedTo?: string | null;
+  resolvedAt?: Date | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const SupportTicketModel = defineModel<SupportTicket>({
+  table: 'support_tickets',
+  columns: [
+    'user',
+    'subject',
+    'description',
+    'category',
+    'status',
+    'priority',
+    'messages',
+    'assignedTo',
+    'resolvedAt',
+    'createdAt',
+    'updatedAt',
+  ],
+  refs: {
+    user: () => UserModel,
+    assignedTo: () => UserModel,
   },
-  { timestamps: true },
-);
-
-supportTicketSchema.index({ user: 1, status: 1, createdAt: -1 });
-
-export type SupportTicket = InferSchemaType<typeof supportTicketSchema> & {
-  _id: mongoose.Types.ObjectId;
-};
-
-export const SupportTicketModel = mongoose.model('SupportTicket', supportTicketSchema);
+});

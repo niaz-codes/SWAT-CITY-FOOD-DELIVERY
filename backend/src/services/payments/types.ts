@@ -24,7 +24,13 @@ export type GatewayInitiateResult =
   | { ok: false; code?: string; reason: string };
 
 export type GatewayVerifyResult =
-  | { status: 'paid'; amount: number; currency: string; gatewayRef?: string; raw?: Record<string, unknown> }
+  | {
+      status: 'paid';
+      amount: number;
+      currency: string;
+      gatewayRef?: string;
+      raw?: Record<string, unknown>;
+    }
   | { status: 'failed'; reason: string; code?: string; raw?: Record<string, unknown> }
   | { status: 'pending'; reason: string; code?: string; raw?: Record<string, unknown> };
 

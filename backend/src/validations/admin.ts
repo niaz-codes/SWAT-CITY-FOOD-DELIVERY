@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { vehiclePlateSchema } from './rider';
 
 export const promotionSchema = z.object({
   code: z.string().trim().min(3).max(20).toUpperCase(),
@@ -26,12 +27,24 @@ export const supportStatusSchema = z.object({
   status: z.enum(['open', 'in_progress', 'resolved', 'closed']),
   priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
   assignedTo: z.string().min(3).optional(),
+  /**
+   * An admin reply appended to the ticket thread. It has to be declared here:
+   * the route validates the body with this schema and the validated payload
+   * replaces req.body, so an undeclared field would be stripped before the
+   * controller could append it.
+   */
+  reply: z.string().trim().min(1).max(1000).optional(),
 });
 
 export const riderReviewSchema = z.object({
   riderId: z.string().min(3),
   approvalStatus: z.enum(['approved', 'rejected']),
   note: z.string().trim().max(300).optional(),
+});
+
+/** Admin-managed bike number, same rules as the rider-proposed one. */
+export const adminUpdateVehiclePlateSchema = z.object({
+  vehiclePlate: vehiclePlateSchema,
 });
 
 export const userStatusSchema = z.object({
@@ -44,5 +57,3 @@ export const appSettingSchema = z.object({
   label: z.string().trim().max(120).optional(),
   description: z.string().trim().max(300).optional(),
 });
-
-export const updateAppSettingSchema = appSettingSchema.partial().omit({ key: true });

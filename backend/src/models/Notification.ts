@@ -1,4 +1,5 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
+import { UserModel } from './User';
 
 export const NOTIFICATION_KINDS = ['order', 'ride', 'promo', 'system', 'wallet'] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -29,29 +30,43 @@ export const NOTIFICATION_EVENTS = [
 ] as const;
 export type NotificationEvent = (typeof NOTIFICATION_EVENTS)[number];
 
-const notificationSchema = new Schema(
-  {
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    type: { type: String, enum: NOTIFICATION_KINDS, default: 'system' },
-    /** Routing hint for push-tap navigation. */
-    event: { type: String, enum: NOTIFICATION_EVENTS, default: 'announcement' },
-    /** The entity the notification points at (order / ride / ticket _id). */
-    refId: { type: String, default: '' },
+export interface Notification {
+  _id: string;
 
-    title: { type: String, required: true },
-    body: { type: String, default: '' },
-    data: { type: Schema.Types.Mixed, default: {} },
+  user: string;
+  type: NotificationKind;
+  /** Routing hint for push-tap navigation. */
+  event: NotificationEvent;
+  /** The entity the notification points at (order / ride / ticket _id). */
+  refId: string;
 
-    read: { type: Boolean, default: false, index: true },
-    readAt: { type: Date },
+  title: string;
+  body: string;
+  data: any;
+
+  read: boolean;
+  readAt?: Date | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const NotificationModel = defineModel<Notification>({
+  table: 'notifications',
+  columns: [
+    'user',
+    'type',
+    'event',
+    'refId',
+    'title',
+    'body',
+    'data',
+    'read',
+    'readAt',
+    'createdAt',
+    'updatedAt',
+  ],
+  refs: {
+    user: () => UserModel,
   },
-  { timestamps: true },
-);
-
-notificationSchema.index({ user: 1, read: 1, createdAt: -1 });
-
-export type Notification = InferSchemaType<typeof notificationSchema> & {
-  _id: mongoose.Types.ObjectId;
-};
-
-export const NotificationModel = mongoose.model('Notification', notificationSchema);
+});

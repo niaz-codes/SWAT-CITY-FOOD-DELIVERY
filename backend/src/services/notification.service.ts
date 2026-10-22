@@ -2,14 +2,14 @@
 // Swat City Backend - Notification service
 //
 // One call does all three delivery channels:
-//   1. persists an in-app notification in MongoDB
+//   1. persists an in-app notification in Supabase
 //   2. emits it live over Socket.IO (foreground, app open)
 //   3. pushes it remotely (background + terminated states)
 //
-// Remote delivery is routed per token: Expo Push tokens (what the Expo Go app
-// registers) go through the Expo Push Service, anything else is treated as an
-// FCM token and sent with firebase-admin. Tokens the transport reports as
-// permanently invalid are pruned so the array does not grow forever.
+// Remote delivery is routed per token: only Expo Push tokens (what the app
+// registers) can be delivered, because the backend talks to the Expo Push
+// Service and no other provider. Tokens the transport reports as permanently
+// invalid are pruned so the array does not grow forever.
 // ============================================================
 
 import {
@@ -17,14 +17,14 @@ import {
   NotificationModel,
   NOTIFICATION_KINDS,
   NOTIFICATION_EVENTS,
+  type BroadcastAudience,
   type Notification,
   type NotificationEvent,
+  type UserRole,
 } from '../models';
-import { sendMulticastNotification, sendPushNotification } from '../config/firebase';
 import {
   isExpoPushToken,
   sendExpoMulticastNotification,
-  sendExpoPushNotification,
 } from '../config/expoPush';
 import { emitToUser, isSocketReady } from '../sockets';
 import { AppError } from '../utils/AppError';
@@ -96,37 +96,26 @@ async function pushToTokens(
   },
 ): Promise<void> {
   try {
-    // The device list can legitimately mix Expo and FCM tokens, so each
-    // transport gets exactly the tokens it understands.
-    const expoTokens = tokens.filter(isExpoPushToken);
-    const fcmTokens = tokens.filter((t) => !isExpoPushToken(t));
-
-    const jobs: Array<Promise<{ invalidTokens: string[] }>> = [];
-
-    if (expoTokens.length > 0) {
-      jobs.push(
-        expoTokens.length === 1
-          ? sendExpoPushNotification(expoTokens[0]!, payload).then(() => ({
-              invalidTokens: [] as string[],
-            }))
-          : sendExpoMulticastNotification(expoTokens, payload),
-      );
+    // Only Expo tokens are deliverable. Silently posting an FCM token to the
+    // Expo API produced a rejected ticket and, worse, looked like a successful
+    // send in the logs, so drop non-Expo tokens explicitly.
+    const expoTokens = [...new Set(tokens.filter(isExpoPushToken))];
+    if (expoTokens.length === 0) {
+      if (tokens.length > 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[push] ${tokens.length} device token(s) for user ${userId} are not Expo push tokens; skipping`,
+        );
+      }
+      return;
     }
 
-    if (fcmTokens.length > 0) {
-      jobs.push(
-        fcmTokens.length === 1
-          ? sendPushNotification(fcmTokens[0]!, payload).then(() => ({
-              invalidTokens: [] as string[],
-            }))
-          : sendMulticastNotification(fcmTokens, payload),
-      );
-    }
-
-    const outcomes = await Promise.all(jobs);
-    const invalid = outcomes.flatMap((o) => o.invalidTokens);
-    if (invalid.length > 0) {
-      await removeDeviceTokens(userId, invalid);
+    // Always use the multicast path: it returns per-ticket errors, so a dead
+    // token is pruned even when the user only has one device. The single-send
+    // helper cannot report DeviceNotRegistered.
+    const result = await sendExpoMulticastNotification(expoTokens, payload);
+    if (result.invalidTokens.length > 0) {
+      await removeDeviceTokens(userId, result.invalidTokens);
     }
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -190,7 +179,7 @@ export async function removeDeviceToken(userId: string, token: string): Promise<
 }
 
 /** Bulk prune used after a failed multicast send. */
-export async function removeDeviceTokens(userId: string, tokens: string[]): Promise<void> {
+async function removeDeviceTokens(userId: string, tokens: string[]): Promise<void> {
   if (tokens.length === 0) return;
   const result = await UserModel.updateOne(
     { _id: userId },
@@ -202,16 +191,122 @@ export async function removeDeviceTokens(userId: string, tokens: string[]): Prom
   }
 }
 
-/** Fan-out helper for announcements to every account holding a given role. */
-export async function notifyRole(
-  role: 'customer' | 'rider' | 'admin',
-  input: NotificationInput,
-): Promise<number> {
-  const recipients = await UserModel.find({ role, status: 'active' }).select('_id').lean();
-  if (recipients.length === 0) return 0;
+// ---------------------------------------------------------------------------
+// Admin broadcasts
+// ---------------------------------------------------------------------------
 
-  await Promise.all(recipients.map((r) => notifyUser(String(r._id), input).catch(() => undefined)));
-  return recipients.length;
+export interface BroadcastInput {
+  title: string;
+  body: string;
+  audience: BroadcastAudience;
+}
+
+export interface BroadcastResult {
+  audience: BroadcastAudience;
+  /** Users that received an in-app notification row. */
+  recipients: number;
+  /** Device tokens targeted for the remote push. */
+  pushed: number;
+}
+
+/** Role set each audience maps to. Admins are never broadcast targets. */
+const BROADCAST_AUDIENCE_ROLES: Record<BroadcastAudience, UserRole[]> = {
+  all: ['customer', 'rider'],
+  customers: ['customer'],
+  riders: ['rider'],
+};
+
+/**
+ * Fan one admin announcement out to every active user in the audience:
+ *   - one persisted in-app notification per recipient (bulk insert)
+ *   - a live Socket.IO emit per recipient
+ *   - a batched Expo push to every registered device token
+ *
+ * Invalid tokens the transport reports are pruned per owning user. Push
+ * delivery is fire-and-forget and never throws - the API response only reports
+ * how many recipients and tokens the fan-out targeted.
+ */
+export async function broadcastNotification(input: BroadcastInput): Promise<BroadcastResult> {
+  const roles = BROADCAST_AUDIENCE_ROLES[input.audience] ?? BROADCAST_AUDIENCE_ROLES.all;
+
+  const users = await UserModel.find({ role: { $in: roles }, status: 'active', deletedAt: null })
+    .select('deviceTokens')
+    .lean();
+
+  if (users.length === 0) {
+    return { audience: input.audience, recipients: 0, pushed: 0 };
+  }
+
+  const created = await NotificationModel.insertMany(
+    users.map((user) => ({
+      user: String(user._id),
+      type: 'system',
+      event: 'announcement',
+      refId: '',
+      title: input.title,
+      body: input.body,
+      data: { broadcast: true, audience: input.audience },
+    })),
+  );
+
+  if (isSocketReady()) {
+    for (const notification of created) {
+      const plain = notification.toObject();
+      emitToUser(String(plain.user), 'notification:new', plain);
+    }
+  }
+
+  // token -> owning user ids, so a token reported invalid can be pruned from
+  // every account that still holds it (a device can be shared between logins).
+  const tokenOwners = new Map<string, Set<string>>();
+  for (const user of users) {
+    const userId = String(user._id);
+    for (const raw of user.deviceTokens ?? []) {
+      const token = raw?.trim();
+      if (!token) continue;
+      const owners = tokenOwners.get(token) ?? new Set<string>();
+      owners.add(userId);
+      tokenOwners.set(token, owners);
+    }
+  }
+
+  const tokens = [...tokenOwners.keys()];
+  if (tokens.length > 0) {
+    void pushBroadcast(tokens, tokenOwners, input);
+  }
+
+  return { audience: input.audience, recipients: users.length, pushed: tokens.length };
+}
+
+/** Batched multicast + per-owner pruning of tokens Expo reports as dead. */
+async function pushBroadcast(
+  tokens: string[],
+  tokenOwners: Map<string, Set<string>>,
+  input: BroadcastInput,
+): Promise<void> {
+  const payload = {
+    event: 'announcement' as NotificationEvent,
+    kind: 'system' as NotifKind,
+    refId: '',
+    notificationId: '',
+    title: input.title,
+    body: input.body,
+  };
+
+  for (let i = 0; i < tokens.length; i += 100) {
+    const batch = tokens.slice(i, i + 100);
+    try {
+      const result = await sendExpoMulticastNotification(batch, payload);
+      for (const token of result.invalidTokens ?? []) {
+        const owners = tokenOwners.get(token);
+        if (!owners) continue;
+        for (const userId of owners) await removeDeviceToken(userId, token);
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[push] broadcast batch failed:', (error as Error).message);
+    }
+  }
 }
 
 export { NOTIFICATION_EVENTS, NOTIFICATION_KINDS };

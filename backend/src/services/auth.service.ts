@@ -1,11 +1,24 @@
-import { CustomerProfileModel, RiderProfileModel, UserModel, WalletModel, type UserRole } from '../models';
+import {
+  CustomerProfileModel,
+  RiderProfileModel,
+  UserModel,
+  WalletModel,
+  type UserRole,
+} from '../models';
 import { hashPassword } from '../utils/helpers';
-import { signAccessToken, signRefreshToken } from '../utils/tokens';
-import { AppError, CONFLICT, UNAUTHORIZED } from '../utils/AppError';
+import { signAccessToken, signRefreshToken, verifyEmailOtpChallenge } from '../utils/tokens';
+import { AppError, CONFLICT, FORBIDDEN, UNAUTHORIZED } from '../utils/AppError';
 import { normalizePhone } from '../utils/helpers';
 import { verifyPassword } from '../utils/helpers';
 import { getOrCreateWallet } from './wallet.service';
 import { notifyUser } from './notification.service';
+import {
+  issueEmailOtp,
+  consumeEmailOtp,
+  buildOtpChallenge,
+  OTP_TTL_SECONDS,
+  type OtpChallengeResponse,
+} from './otp.service';
 
 export interface AuthResult {
   user: Record<string, unknown>;
@@ -58,14 +71,36 @@ export async function buildAuthResult(user: {
   return { user: publicUser(user), accessToken, refreshToken };
 }
 
-export async function findUserByPhone(phone: string) {
-  const normalized = normalizePhone(phone);
-  return UserModel.findOne({ phone: normalized });
+/**
+ * What login / register answer with when a 6-digit email code still has to be
+ * confirmed. No access token is issued until that code is verified.
+ */
+export type { OtpChallengeResponse };
+
+/**
+ * Undo a just-created, still-unverified registration when the verification
+ * email could not be sent.
+ *
+ * Without this the account exists but can never be verified, and the user's
+ * retry is rejected with "this email already exists" - a dead end. Deletion is
+ * guarded on `verified: false` so a concurrent successful verification wins.
+ */
+async function rollbackUnverifiedRegistration(userId: string): Promise<void> {
+  await Promise.all([
+    CustomerProfileModel.deleteOne({ user: userId }).catch(() => undefined),
+    RiderProfileModel.deleteOne({ user: userId }).catch(() => undefined),
+    WalletModel.deleteOne({ user: userId }).catch(() => undefined),
+  ]);
+  await UserModel.deleteOne({ _id: userId, verified: false }).catch(() => undefined);
 }
 
 /**
  * Register a customer or rider account. Admin role is never accepted here —
  * admins are seeded by the system only. Every new user gets a wallet.
+ *
+ * The account is created UNVERIFIED: no session is issued until the 6-digit
+ * code emailed to `input.email` is confirmed (see `verifyEmailOtp`). This is the
+ * only registration path, so an unverified email can never hold a session.
  */
 export async function registerUser(input: {
   name: string;
@@ -77,25 +112,30 @@ export async function registerUser(input: {
   vehicleBrand?: string;
   vehiclePlate?: string;
   cnic?: string;
-}): Promise<AuthResult> {
+}): Promise<OtpChallengeResponse> {
+  const email = input.email?.trim().toLowerCase();
+  if (!email) throw new AppError('An email address is required', 422);
+
   const normalized = normalizePhone(input.phone);
   const existing = await UserModel.findOne({
-    $or: [{ phone: normalized }, input.email ? { email: input.email.toLowerCase() } : null].filter(
-      Boolean,
-    ) as object[],
+    $or: [{ phone: normalized }, { email }],
   });
   if (existing) {
-    throw CONFLICT(existing.phone === normalized ? 'An account with this phone already exists' : 'An account with this email already exists');
+    throw CONFLICT(
+      existing.phone === normalized
+        ? 'An account with this phone already exists'
+        : 'An account with this email already exists',
+    );
   }
 
   const password = await hashPassword(input.password);
   const user = await UserModel.create({
     name: input.name,
     phone: normalized,
-    email: input.email?.toLowerCase() || undefined,
+    email,
     role: input.role,
     password,
-    verified: true,
+    verified: false,
     isApproved: input.role === 'customer',
     pendingApproval: input.role === 'rider',
   });
@@ -116,93 +156,355 @@ export async function registerUser(input: {
   }
 
   await getOrCreateWallet(String(user._id), input.role === 'rider');
-  await notifyUser(String(user._id), {
-    type: 'system',
-    title: 'Welcome to Swat City',
-    body:
-      input.role === 'rider'
-        ? 'Your profile is under review. You can browse until you are approved to take orders.'
-        : 'Your account is ready. Enjoy your first order!',
+
+  const issued = await issueEmailOtp({ email, purpose: 'register', name: input.name }).catch(
+    async (error) => {
+      await rollbackUnverifiedRegistration(String(user._id));
+      throw error;
+    },
+  );
+  // The client is about to show "enter the code we emailed you". If the
+  // provider refused the mail, answering with a challenge anyway would strand
+  // the new account on a screen waiting for an email that never arrives - so a
+  // refused send becomes a visible, retryable error instead.
+  try {
+    assertEmailSent(issued);
+  } catch (error) {
+    await rollbackUnverifiedRegistration(String(user._id));
+    throw error;
+  }
+  return buildOtpChallenge({ userId: String(user._id), email, purpose: 'register', issued });
+}
+
+/**
+ * Step 1 of email + password sign-in.
+ *
+ * The credentials are checked exactly as before, but instead of a session the
+ * caller receives an email-OTP challenge. The access token is only minted once
+ * the emailed code is confirmed, so a stolen password alone is not enough.
+ */
+export async function beginEmailLogin(
+  email: string,
+  password: string,
+): Promise<OtpChallengeResponse> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const user = await UserModel.findOne({ email: normalizedEmail }).select('+password');
+  // Same message whether the account is missing, passwordless, or wrong - the
+  // response must never reveal which emails are registered.
+  if (!user) throw UNAUTHORIZED('Invalid email or password');
+
+  const valid = user.password ? await verifyPassword(password, String(user.password)) : false;
+  if (!valid) throw UNAUTHORIZED('Invalid email or password');
+  if (user.status === 'suspended') throw new AppError('Account is suspended', 403);
+
+  const issued = await issueEmailOtp({
+    email: normalizedEmail,
+    purpose: 'login',
+    name: user.name ?? undefined,
+  });
+  // The user is about to be shown a "enter the code we emailed you" screen.
+  // If SMTP rejected the send, returning a challenge anyway would strand them
+  // on that screen waiting for an email that never arrives — fail loudly so
+  // the client shows a retryable error instead.
+  assertEmailSent(issued);
+  return buildOtpChallenge({
+    userId: String(user._id),
+    email: normalizedEmail,
+    purpose: 'login',
+    issued,
+  });
+}
+
+/**
+ * The error a refused email send turns into.
+ *
+ * Supabase knows exactly how long this address has to wait before another
+ * code may be requested; repeating that number saves the user from guessing.
+ */
+export function emailSendFailure(issued: { retryAfterSeconds?: number }): AppError {
+  if (issued.retryAfterSeconds) {
+    return new AppError(
+      `We could not send the verification email. Please try again in ${issued.retryAfterSeconds} seconds.`,
+      502,
+    );
+  }
+  return new AppError(
+    'We could not send the verification email. Please try again in a moment.',
+    502,
+  );
+}
+
+/**
+ * Fail loudly when the provider refused to send the code.
+ *
+ * Every flow that shows a "we emailed you a code" screen calls this. When the
+ * mail never left, answering with a challenge anyway would strand the user in
+ * front of an inbox that stays empty, so the failure becomes a visible,
+ * retryable error instead of a silent wait.
+ */
+export function assertEmailSent(issued: {
+  emailSent: boolean;
+  retryAfterSeconds?: number;
+}): void {
+  if (issued.emailSent) return;
+  throw emailSendFailure(issued);
+}
+
+/**
+ * Step 2 of email-OTP: verify the emailed code and, on success, mint the
+ * session. Shared by the `login` and `register` purposes — the only difference
+ * is that a registration also flips `verified` on and sends the welcome note.
+ */
+export async function verifyEmailOtp(challengeToken: string, otp: string): Promise<AuthResult> {
+  const claims = verifyEmailOtpChallenge(challengeToken);
+  if (claims.purpose !== 'login' && claims.purpose !== 'register') {
+    throw UNAUTHORIZED('Invalid verification session');
+  }
+
+  await consumeEmailOtp({ email: claims.email, purpose: claims.purpose, code: otp });
+
+  const user = await UserModel.findById(claims.sub).lean();
+  if (!user) throw UNAUTHORIZED('Account no longer exists');
+  if (user.status === 'suspended') throw new AppError('Account is suspended', 403);
+
+  if (!user.verified) {
+    await UserModel.updateOne({ _id: user._id }, { $set: { verified: true } });
+    await notifyUser(String(user._id), {
+      type: 'system',
+      title: 'Welcome to Swat City Food Delivery',
+      body:
+        user.role === 'rider'
+          ? 'Your profile is under review. You can browse until you are approved to take orders.'
+          : 'Your account is ready. Enjoy your first order!',
+    });
+  }
+
+  await UserModel.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } });
+  return buildAuthResult({ ...user, verified: true });
+}
+
+/**
+ * Re-issue the 6-digit code for a half-finished flow.
+ *
+ * Takes the same challenge token the verify step uses, so a resend can only
+ * ever target the email + purpose the flow already proved. The account is looked
+ * up again rather than trusted from the request body.
+ *
+ * An unknown / removed account (only reachable on the reset path) mirrors the
+ * enumeration-safe forgot-password response: a challenge is returned but nothing
+ * is emailed, so a resend cannot reveal whether an address is registered.
+ */
+export async function resendEmailOtp(challengeToken: string): Promise<OtpChallengeResponse> {
+  const claims = verifyEmailOtpChallenge(challengeToken);
+  const user = claims.sub ? await UserModel.findById(claims.sub).select('name email').lean() : null;
+
+  if (!user) {
+    return buildOtpChallenge({
+      userId: '',
+      email: claims.email,
+      purpose: claims.purpose,
+      issued: { email: claims.email, ttlSeconds: OTP_TTL_SECONDS },
+    });
+  }
+
+  const issued = await issueEmailOtp({
+    email: claims.email,
+    purpose: claims.purpose,
+    name: user.name ?? undefined,
+  });
+  // Same rule as the login step: a "we sent a new code" answer that no email
+  // follows strands the user on the code screen, so a refused send is a
+  // visible, retryable error instead.
+  assertEmailSent(issued);
+  return buildOtpChallenge({
+    userId: String(user._id),
+    email: claims.email,
+    purpose: claims.purpose,
+    issued,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// NOTE: phone / SMS OTP has been removed. Every account verifies its email with
+// a 6-digit code issued by `otp.service` and confirmed through `verifyEmailOtp`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a rider from the full onboarding form.
+ *
+ * Differs from `registerUser` because rider onboarding carries three things the
+ * generic path cannot express:
+ *   - the self-taken photo (already uploaded to Cloudinary by the controller)
+ *   - the picked base location from the live map
+ *   - bike registration number and experience, both mandatory
+ *
+ * The photo is written to `photoUrl`, never to the admin-owned `avatarUrl`: a
+ * rider's camera shot is an application attachment awaiting approval, not a
+ * published profile picture.
+ */
+export async function registerRiderWithPhoto(
+  input: {
+    name: string;
+    phone: string;
+    email?: string;
+    password: string;
+    cnic: string;
+    baseCity?: string;
+    vehicleType: 'bike' | 'rickshaw' | 'van' | 'car';
+    vehiclePlate: string;
+    experienceYears: number;
+    location: { lat: number; lng: number; label?: string };
+  },
+  photo: { url: string; publicId: string },
+): Promise<OtpChallengeResponse> {
+  const normalized = normalizePhone(input.phone);
+  const email = input.email?.trim().toLowerCase();
+  if (!email) throw new AppError('An email address is required', 422);
+
+  const clash = await UserModel.findOne({
+    $or: [{ phone: normalized }, { email }],
+  });
+  if (clash) {
+    throw CONFLICT(
+      clash.phone === normalized
+        ? 'An account with this phone already exists'
+        : 'An account with this email already exists',
+    );
+  }
+
+  const hashed = await hashPassword(input.password);
+  const user = await UserModel.create({
+    name: input.name,
+    phone: normalized,
+    email,
+    role: 'rider',
+    password: hashed,
+    verified: false,
+    isApproved: false,
+    pendingApproval: true,
   });
 
-  UserModel.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } }).exec();
-  return buildAuthResult(user);
+  await RiderProfileModel.create({
+    user: user._id,
+    name: input.name,
+    phone: normalized,
+    cnic: input.cnic,
+    baseCity: input.baseCity,
+    vehicleType: input.vehicleType,
+    vehiclePlate: input.vehiclePlate,
+    experienceYears: input.experienceYears,
+    photoUrl: photo.url,
+    photoPublicId: photo.publicId,
+    photoUploadedAt: new Date(),
+    baseLocation: {
+      lat: input.location.lat,
+      lng: input.location.lng,
+      label: input.location.label ?? null,
+      setAt: new Date(),
+    },
+    approvalStatus: 'pending',
+  });
+
+  await getOrCreateWallet(String(user._id), true);
+
+  const issued = await issueEmailOtp({ email, purpose: 'register', name: input.name }).catch(
+    async (error) => {
+      await rollbackUnverifiedRegistration(String(user._id));
+      throw error;
+    },
+  );
+  // Same rule as the login step: a "we sent a code" answer that no email
+  // follows would leave the new rider staring at a code screen with nothing in
+  // their inbox, so a refused send is reported instead of hidden.
+  try {
+    assertEmailSent(issued);
+  } catch (error) {
+    // The account/profile/wallet are rolled back so the rider can retry; the
+    // controller also removes the already-uploaded photo.
+    await rollbackUnverifiedRegistration(String(user._id));
+    throw error;
+  }
+  return buildOtpChallenge({ userId: String(user._id), email, purpose: 'register', issued });
 }
 
-export async function loginWithPassword(phone: string, password: string): Promise<AuthResult> {
-  const normalized = normalizePhone(phone);
-  const user = await UserModel.findOne({ phone: normalized }).select('+password');
-  if (!user) throw UNAUTHORIZED('Invalid phone or password');
+/** Article for a role name, so error messages read naturally. */
+const aOrAn = (word: string): string => (/^[aeiou]/i.test(word) ? 'an' : 'a');
 
-  const valid = await verifyPassword(password, user.password ? String(user.password) : '');
-  if (!valid) throw UNAUTHORIZED('Invalid phone or password');
-  if (user.status === 'suspended') throw new AppError('Account is suspended', 403);
+/**
+ * Refuse any email that already belongs to a rider or admin.
+ *
+ * A Google sign-in must never be able to reach or mint a privileged account,
+ * and must not silently hand a rider's account to the customer app.
+ */
+async function assertCustomerEmailAvailable(email: string): Promise<void> {
+  const existing = await UserModel.findOne({ email });
+  if (!existing) return;
+  if (existing.role !== 'customer') {
+    throw FORBIDDEN(
+      `This Google account is registered as ${aOrAn(existing.role)} ${existing.role}. Please sign in with your mobile number instead.`,
+    );
+  }
+  if (existing.status === 'suspended') throw new AppError('Account is suspended', 403);
+}
 
+/**
+ * Customer sign-in / sign-up with Google.
+ *
+ * Google has already verified the email, so an existing customer gets a session
+ * immediately and a brand new email is registered on the spot — no phone number
+ * and no second OTP step. The verified Google email is itself the proof of
+ * ownership that the email-OTP flow provides for password sign-ups.
+ *
+ * A Google email that belongs to a rider or admin is refused: it must never be
+ * able to reach or mint a privileged account.
+ */
+export type GoogleAuthOutcome = { kind: 'session'; result: AuthResult; created: boolean };
+
+export async function loginOrRegisterGoogleCustomer(identity: {
+  googleId: string;
+  email: string;
+  name: string;
+  picture: string | null;
+}): Promise<GoogleAuthOutcome> {
+  const email = identity.email.trim().toLowerCase();
+  const existing = await UserModel.findOne({ email });
+
+  if (existing) {
+    await assertCustomerEmailAvailable(email);
+
+    // Backfill details that Google knows but the account was created without.
+    const patch: Record<string, unknown> = {};
+    if (!existing.name) patch.name = identity.name;
+    if (!existing.avatarUrl && identity.picture) patch.avatarUrl = identity.picture;
+    if (Object.keys(patch).length > 0) {
+      await UserModel.updateOne({ _id: existing._id }, { $set: patch }).exec();
+      Object.assign(existing, patch);
+    }
+    await UserModel.updateOne({ _id: existing._id }, { $set: { lastLoginAt: new Date() } }).exec();
+    return { kind: 'session', result: await buildAuthResult(existing), created: false };
+  }
+
+  const user = await UserModel.create({
+    name: identity.name,
+    email,
+    avatarUrl: identity.picture ?? undefined,
+    role: 'customer',
+    verified: true,
+    isApproved: true,
+  });
+
+  await CustomerProfileModel.create({
+    user: user._id,
+    name: user.name ?? undefined,
+    avatarUrl: identity.picture ?? undefined,
+  });
+  await getOrCreateWallet(String(user._id), false);
+  await notifyUser(String(user._id), {
+    type: 'system',
+    title: 'Welcome to Swat City Food Delivery',
+    body: 'Your account is ready. Enjoy your first order!',
+  });
   await UserModel.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } }).exec();
-  return buildAuthResult(user);
-}
 
-// ---------------------------------------------------------------------------
-// OTP - short lived; SMS gateway is a plug point. In development the OTP is
-// echoed in the response (meta.debugOtp) so manual flows are testable.
-// ---------------------------------------------------------------------------
-
-const otpStore = new Map<string, { otp: string; expiresAt: number; attempts: number }>();
-
-const OTP_TTL_MS = 5 * 60 * 1000;
-const MAX_ATTEMPTS = 5;
-
-export function requestOtp(phone: string): { otp: string | null; debugOtp: string | undefined } {
-  const normalized = normalizePhone(phone);
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
-  otpStore.set(normalized, { otp, expiresAt: Date.now() + OTP_TTL_MS, attempts: 0 });
-  // NOTE: In production this is where an SMS/OTP gateway is called.
-  // eslint-disable-next-line no-console
-  console.log(`[otp] OTP for ${normalized}: ${otp}`);
-  return { otp, debugOtp: process.env.NODE_ENV !== 'production' ? otp : undefined };
-}
-
-export function verifyOtp(phone: string, otp: string, name?: string, email?: string): boolean {
-  const normalized = normalizePhone(phone);
-  const entry = otpStore.get(normalized);
-  if (!entry) throw UNAUTHORIZED('No OTP requested for this number. Request one first.');
-  if (Date.now() > entry.expiresAt) {
-    otpStore.delete(normalized);
-    throw UNAUTHORIZED('OTP has expired. Request a new one.');
-  }
-  entry.attempts += 1;
-  if (entry.attempts > MAX_ATTEMPTS) {
-    otpStore.delete(normalized);
-    throw UNAUTHORIZED('Too many incorrect attempts. Request a new OTP.');
-  }
-  if (entry.otp !== otp) {
-    throw UNAUTHORIZED('Invalid OTP');
-  }
-  otpStore.delete(normalized);
-  return true;
-}
-
-/** Create a session for a phone that verified an OTP (used by OTP login). */
-export async function upsertOtpUser(input: {
-  phone: string;
-  name?: string;
-  email?: string;
-}): Promise<AuthResult> {
-  const normalized = normalizePhone(input.phone);
-  let user = await UserModel.findOne({ phone: normalized });
-  if (!user) {
-    user = await UserModel.create({
-      name: input.name?.trim() || 'Swat Customer',
-      phone: normalized,
-      email: input.email?.toLowerCase() || undefined,
-      role: 'customer',
-      verified: true,
-      isApproved: true,
-    });
-    await CustomerProfileModel.create({ user: user._id, name: user.name });
-    await getOrCreateWallet(String(user._id), false);
-  }
-  if (user.status === 'suspended') throw new AppError('Account is suspended', 403);
-  await UserModel.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } }).exec();
-  return buildAuthResult(user);
+  return { kind: 'session', result: await buildAuthResult(user), created: true };
 }

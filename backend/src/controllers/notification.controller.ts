@@ -3,11 +3,7 @@ import type { AuthRequest } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
 import { UNAUTHORIZED } from '../utils/AppError';
-import {
-  listNotifications,
-  markAllRead,
-  markRead,
-} from '../services/notification.service';
+import { listNotifications, markAllRead, markRead } from '../services/notification.service';
 
 export const listNotificationsCtrl = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();

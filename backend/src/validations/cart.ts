@@ -16,9 +16,3 @@ export const updateCartItemSchema = z.object({
   quantity: z.number().int().min(1).max(99),
   note: z.string().trim().max(200).optional(),
 });
-
-export const removeFromCartSchema = z.object({
-  foodItem: z.string().min(3, 'foodItem id is required'),
-});
-
-export const clearCartSchema = z.object({});

@@ -1,67 +1,99 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
+import { UserModel } from './User';
 
 export const RIDE_TYPES = ['swat_moto', 'swat_city', 'swat_van'] as const;
 export type RideType = (typeof RIDE_TYPES)[number];
 
-export const RIDE_STATUSES = ['searching', 'accepted', 'arriving', 'started', 'completed', 'cancelled'] as const;
+export const RIDE_STATUSES = [
+  'searching',
+  'accepted',
+  'arriving',
+  'started',
+  'completed',
+  'cancelled',
+] as const;
 export type RideStatus = (typeof RIDE_STATUSES)[number];
 
-const rideSchema = new Schema(
-  {
-    rideNumber: { type: String, unique: true, sparse: true },
+/** One entry of the ride's status timeline (no `_id`). */
+export interface RideStatusEvent {
+  status?: RideStatus | null;
+  note?: string | null;
+  at?: Date | null;
+}
 
-    customer: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    rider: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+/** Pickup / dropoff pair — both required (address + coordinates). */
+export interface RideStop {
+  address: string;
+  area?: string | null;
+  lat: number;
+  lng: number;
+}
 
-    type: { type: String, enum: RIDE_TYPES, required: true },
-    vehicle: { type: String, enum: ['bike', 'rickshaw', 'van', 'car'], default: 'bike' },
+export interface Ride {
+  _id: string;
 
-    status: { type: String, enum: RIDE_STATUSES, default: 'searching', index: true },
-    statusHistory: [
-      {
-        _id: false,
-        status: { type: String, enum: RIDE_STATUSES },
-        note: { type: String },
-        at: { type: Date, default: Date.now },
-      },
-    ],
+  rideNumber?: string | null;
 
-    pickup: {
-      address: { type: String, required: true },
-      area: { type: String },
-      lat: { type: Number, required: true },
-      lng: { type: Number, required: true },
-    },
-    dropoff: {
-      address: { type: String, required: true },
-      area: { type: String },
-      lat: { type: Number, required: true },
-      lng: { type: Number, required: true },
-    },
+  customer: string;
+  rider?: string | null;
 
-    distanceKm: { type: Number, required: true, min: 0 },
-    durationMin: { type: Number, default: 0 },
+  type: RideType;
+  vehicle: string;
 
-    // Fare computed server-side from base + perKm.
-    baseFare: { type: Number, default: 0 },
-    distanceFare: { type: Number, default: 0 },
-    surgeMultiplier: { type: Number, default: 1 },
-    fare: { type: Number, required: true, min: 0 },
-    riderPayout: { type: Number, default: 0 },
+  status: RideStatus;
+  statusHistory: RideStatusEvent[];
 
-    paymentMethod: { type: String, enum: ['cash', 'wallet'], default: 'cash' },
-    cancelReason: { type: String },
-    cancelledBy: { type: String, enum: ['customer', 'rider', 'admin', 'system'] },
+  pickup: RideStop;
+  dropoff: RideStop;
 
-    deletedAt: { type: Date, default: null },
+  distanceKm: number;
+  durationMin: number;
+
+  // Fare computed server-side from base + perKm.
+  baseFare: number;
+  distanceFare: number;
+  surgeMultiplier: number;
+  fare: number;
+  riderPayout: number;
+
+  paymentMethod: string;
+  cancelReason?: string | null;
+  cancelledBy?: string | null;
+
+  deletedAt: Date | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const RideModel = defineModel<Ride>({
+  table: 'rides',
+  columns: [
+    'rideNumber',
+    'customer',
+    'rider',
+    'type',
+    'vehicle',
+    'status',
+    'statusHistory',
+    'pickup',
+    'dropoff',
+    'distanceKm',
+    'durationMin',
+    'baseFare',
+    'distanceFare',
+    'surgeMultiplier',
+    'fare',
+    'riderPayout',
+    'paymentMethod',
+    'cancelReason',
+    'cancelledBy',
+    'deletedAt',
+    'createdAt',
+    'updatedAt',
+  ],
+  refs: {
+    customer: () => UserModel,
+    rider: () => UserModel,
   },
-  { timestamps: true },
-);
-
-rideSchema.index({ status: 1, createdAt: -1 });
-rideSchema.index({ rider: 1, status: 1 });
-rideSchema.index({ customer: 1, createdAt: -1 });
-
-export type Ride = InferSchemaType<typeof rideSchema> & { _id: mongoose.Types.ObjectId };
-
-export const RideModel = mongoose.model('Ride', rideSchema);
+});

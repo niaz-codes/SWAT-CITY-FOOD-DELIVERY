@@ -1,6 +1,7 @@
-import { randomUUID } from 'crypto';
+﻿import { randomUUID } from 'crypto';
 import { env, publicApiUrl } from '../config/env';
 import {
+  CartModel,
   OrderModel,
   PaymentModel,
   type GatewayPaymentMethod,
@@ -10,7 +11,7 @@ import { getProvider } from './payments';
 import type { GatewayInitiateResult, GatewayVerifyResult, InitiateInput } from './payments/types';
 import { AppError, BAD_REQUEST, CONFLICT, NOT_FOUND } from '../utils/AppError';
 import { notifyUser } from './notification.service';
-import { Types } from 'mongoose';
+import { notifyAdminsNewOrder } from './order.service';
 
 const GATEWAYS: readonly GatewayPaymentMethod[] = ['easypaisa', 'jazzcash'];
 
@@ -101,7 +102,7 @@ export async function initiateOnlinePayment({
 
   if (!payment) {
     payment = await PaymentModel.create({
-      user: new Types.ObjectId(userId),
+      user: userId,
       kind: 'order',
       order: order._id,
       method,
@@ -129,7 +130,7 @@ export async function initiateOnlinePayment({
     transactionRef: payment.transactionRef as string,
     amountPkr: payment.amount,
     orderNumber: order.orderNumber || String(order._id),
-    description: `Swat City Order ${order.orderNumber || order._id}`,
+    description: `Swat City Food Delivery Order ${order.orderNumber || order._id}`,
     returnUrl,
     customerPhone: customerPhone ?? '',
     customerEmail: customerEmail ?? '',
@@ -179,7 +180,7 @@ export async function initiateOnlinePayment({
 }
 
 /**
- * Server-to-server verification — the authoritative source of truth.
+ * Server-to-server verification - the authoritative source of truth.
  *
  * A browser redirect is never trusted: this asks the gateway directly and only
  * writes `paid` when the gateway confirms it AND the amount matches what we
@@ -258,6 +259,21 @@ export async function verifyOnlinePayment(input: {
 
       // Only announce the order once, the first time it becomes paid.
       if (!wasPaid) {
+        // Money is confirmed, so the basket that produced this order can go.
+        //
+        // Guarded on restaurant + createdAt so a cart the customer started
+        // *after* placing this order (different restaurant, or a retry build) is
+        // never wiped by an older order settling.
+        await CartModel.findOneAndUpdate(
+          {
+            user: order.customer,
+            restaurant: order.restaurant,
+            createdAt: { $lte: order.createdAt },
+            'items.0': { $exists: true },
+          },
+          { $set: { items: [], subtotal: 0, restaurant: undefined } },
+        );
+
         await notifyUser(String(order.customer), {
           type: 'order',
           event: 'order_placed',
@@ -271,6 +287,10 @@ export async function verifyOnlinePayment(input: {
             paymentStatus: 'paid',
           },
         });
+
+        // A gateway order only becomes real work once the money is confirmed,
+        // so the admin alert is sent here rather than at creation time.
+        await notifyAdminsNewOrder(order);
       }
     }
   } else if (result.status === 'failed') {
@@ -322,8 +342,14 @@ export async function verifyOnlinePayment(input: {
  * primary lookup key and requires a fresh value per attempt, so the random suffix
  * is what makes a retry a distinct transaction rather than a duplicate.
  */
-export function generateTransactionRef(orderNumberOrId: string, method: GatewayPaymentMethod): string {
-  const clean = String(orderNumberOrId).replace(/[^A-Za-z0-9]/g, '').slice(0, 16) || 'ORDER';
+export function generateTransactionRef(
+  orderNumberOrId: string,
+  method: GatewayPaymentMethod,
+): string {
+  const clean =
+    String(orderNumberOrId)
+      .replace(/[^A-Za-z0-9]/g, '')
+      .slice(0, 16) || 'ORDER';
   const prefix = method === 'easypaisa' ? 'EP' : 'JC';
   const suffix = randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
   return `${clean}-${prefix}-${suffix}`;
@@ -333,7 +359,9 @@ export function generateTransactionRef(orderNumberOrId: string, method: GatewayP
  * Strips anything credential-shaped before persisting a gateway response.
  * `pp_Password`, salts and SecureHash values must never reach the database.
  */
-function sanitiseMetadata(raw: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+function sanitiseMetadata(
+  raw: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
   if (!raw) return undefined;
   const blocked = /password|secret|salt|securehash|credential|apikey|token/i;
   const out: Record<string, unknown> = {};
@@ -356,81 +384,30 @@ export async function abandonOnlinePayment(paymentId: string, userId: string): P
 
   await PaymentModel.updateOne(
     { _id: payment._id },
-    { $set: { status: 'cancelled', failedAt: new Date(), failureReason: 'User abandoned the payment' } },
+    {
+      $set: {
+        status: 'cancelled',
+        failedAt: new Date(),
+        failureReason: 'User abandoned the payment',
+      },
+    },
   );
 }
 
 /**
- * Retargets an order at cash-on-delivery.
+ * markCashOrderPending() was deleted.
  *
- * Used when a customer starts an online payment and then changes their mind. Any
- * in-flight gateway payment is cancelled for audit, the order's active payment
- * becomes a cash record awaiting collection, and — since COD is immediately
- * actionable — the customer is now notified that the order reached the kitchen.
+ * It retargeted an order at cash-on-delivery: it cancelled any in-flight gateway
+ * payment, rewrote the order's active Payment to `method: 'cash'`,
+ * `gateway: 'cash'`, cleared the gateway reference, reset `paymentStatus` to
+ * 'pending' and then notified the kitchen that the order had been placed.
+ *
+ * That combination meant an order could become actionable again with no money
+ * ever collected — the exact pretend-success the payment rules forbid. It was
+ * reachable from POST /payments/orders/:id/payment/cash.
+ *
+ * A failed or abandoned payment is now left failed. The only way forward is a
+ * fresh verified gateway payment via createOrderPayment() + verifyOrderPayment().
  */
-export async function markCashOrderPending(input: { orderId: string; userId: string }): Promise<OrderDoc> {
-  const order = await OrderModel.findById(input.orderId);
-  if (!order) throw NOT_FOUND('Order');
-  if (String(order.customer) !== String(input.userId)) {
-    throw new AppError('You can only pay for your own orders', 403);
-  }
-  if (order.paymentStatus === 'paid') throw CONFLICT('Order already paid');
-
-  await PaymentModel.updateMany(
-    {
-      order: order._id,
-      method: { $in: [...GATEWAYS] },
-      status: { $in: ['pending', 'processing'] },
-    },
-    { $set: { status: 'cancelled', failedAt: new Date(), failureReason: 'Switched to cash on delivery' } },
-  );
-
-  const existing = order.payment ? await PaymentModel.findById(order.payment) : null;
-
-  if (existing) {
-    existing.method = 'cash';
-    existing.status = 'pending';
-    existing.gateway = 'cash';
-    existing.transactionRef = undefined;
-    existing.gatewayRef = undefined;
-    existing.initiatedAt = null;
-    existing.expiresAt = null;
-    await existing.save();
-  } else {
-    const created = await PaymentModel.create({
-      user: new Types.ObjectId(input.userId),
-      kind: 'order',
-      order: order._id,
-      method: 'cash',
-      status: 'pending',
-      amount: order.total,
-      currency: 'PKR',
-      gateway: 'cash',
-    });
-    order.payment = created._id;
-  }
-
-  const wasAlreadyActionable = order.paymentMethod === 'cash';
-
-  order.paymentMethod = 'cash';
-  order.paymentStatus = 'pending';
-  order.paymentGateway = undefined;
-  order.paymentTransactionRef = undefined;
-  order.paymentVerifiedAt = null;
-  await order.save();
-
-  if (!wasAlreadyActionable) {
-    await notifyUser(input.userId, {
-      type: 'order',
-      event: 'order_placed',
-      refId: String(order._id),
-      title: 'Order placed',
-      body: `Your order ${order.orderNumber} has been sent to the kitchen. Pay cash on delivery.`,
-      data: { orderId: String(order._id), orderNumber: order.orderNumber, status: order.status },
-    });
-  }
-
-  return order as unknown as OrderDoc;
-}
 
 export type { Payment };

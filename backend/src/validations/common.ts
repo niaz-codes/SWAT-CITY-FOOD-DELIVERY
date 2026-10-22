@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Pakistani mobile number, loosely spaced: +92 3xx... / 03xx... / 3xx... */
+export const phoneRegex = /^(\+?92|0)?3\d{9}$/;
+
 export const reviewSchema = z.object({
   targetType: z.enum(['restaurant', 'food', 'rider', 'ride']),
   targetId: z.string().min(3),

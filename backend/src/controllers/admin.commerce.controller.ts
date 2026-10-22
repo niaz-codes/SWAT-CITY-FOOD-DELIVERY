@@ -1,14 +1,9 @@
 import type { Response } from 'express';
-import { Types } from 'mongoose';
-import {
-  AppSettingModel,
-  PromotionModel,
-  SupportTicketModel,
-} from '../models';
+import { AppSettingModel, PromotionModel, SupportTicketModel } from '../models';
 import type { AuthRequest } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
-import { AppError, NOT_FOUND, UNAUTHORIZED } from '../utils/AppError';
+import { NOT_FOUND, UNAUTHORIZED } from '../utils/AppError';
 import { paginationMeta } from '../utils/helpers';
 import { notifyUser } from '../services/notification.service';
 import { getSetting, setSetting } from '../services/settings.service';
@@ -25,7 +20,11 @@ export const adminListPromotions = asyncHandler(async (req: AuthRequest, res: Re
   const p = Math.max(1, Number(page) || 1);
   const l = Math.min(100, Math.max(1, Number(limit) || 20));
   const [promotions, total] = await Promise.all([
-    PromotionModel.find(query).sort({ createdAt: -1 }).skip((p - 1) * l).limit(l).lean(),
+    PromotionModel.find(query)
+      .sort({ createdAt: -1 })
+      .skip((p - 1) * l)
+      .limit(l)
+      .lean(),
     PromotionModel.countDocuments(query),
   ]);
   sendSuccess(res, { promotions }, paginationMeta(p, l, total));
@@ -39,14 +38,22 @@ export const adminCreatePromotion = asyncHandler(async (req: AuthRequest, res: R
 
 export const adminUpdatePromotion = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const promotion = await PromotionModel.findOneAndUpdate({ _id: req.params.id }, { $set: req.body }, { new: true });
+  const promotion = await PromotionModel.findOneAndUpdate(
+    { _id: req.params.id },
+    { $set: req.body },
+    { new: true },
+  );
   if (!promotion) throw NOT_FOUND('Promotion');
   sendSuccess(res, { promotion });
 });
 
 export const adminDeletePromotion = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const promotion = await PromotionModel.findOneAndUpdate({ _id: req.params.id }, { $set: { active: false } }, { new: true });
+  const promotion = await PromotionModel.findOneAndUpdate(
+    { _id: req.params.id },
+    { $set: { active: false } },
+    { new: true },
+  );
   if (!promotion) throw NOT_FOUND('Promotion');
   sendSuccess(res, { deleted: true });
 });
@@ -86,7 +93,12 @@ export const adminListTickets = asyncHandler(async (req: AuthRequest, res: Respo
   const p = Math.max(1, Number(page) || 1);
   const l = Math.min(100, Math.max(1, Number(limit) || 20));
   const [tickets, total] = await Promise.all([
-    SupportTicketModel.find(query).populate('user', 'name phone').sort({ updatedAt: -1 }).skip((p - 1) * l).limit(l).lean(),
+    SupportTicketModel.find(query)
+      .populate('user', 'name phone')
+      .sort({ updatedAt: -1 })
+      .skip((p - 1) * l)
+      .limit(l)
+      .lean(),
     SupportTicketModel.countDocuments(query),
   ]);
   sendSuccess(res, { tickets }, paginationMeta(p, l, total));
@@ -94,7 +106,10 @@ export const adminListTickets = asyncHandler(async (req: AuthRequest, res: Respo
 
 export const adminTicketDetail = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const ticket = await SupportTicketModel.findById(req.params.id).populate('user', 'name phone email');
+  const ticket = await SupportTicketModel.findById(req.params.id).populate(
+    'user',
+    'name phone email',
+  );
   if (!ticket) throw NOT_FOUND('Ticket');
   sendSuccess(res, { ticket });
 });
@@ -109,14 +124,19 @@ export const adminUpdateTicket = asyncHandler(async (req: AuthRequest, res: Resp
     assignedTo?: string;
     reply?: string;
   };
-  if (status) ticket.status = status;
-  if (priority) ticket.priority = priority;
-  if (assignedTo) ticket.assignedTo = new Types.ObjectId(assignedTo) as unknown as typeof ticket.assignedTo;
+  const fresh = await SupportTicketModel.findById(req.params.id);
+  if (!fresh) throw NOT_FOUND('Ticket');
+  if (status) fresh.status = status;
+  if (priority) fresh.priority = priority;
+  if (assignedTo) (fresh as any).assignedTo = assignedTo;
   if (reply) {
-    ticket.messages.push({ from: req.user._id, text: reply });
+    (fresh as any).messages = [
+      ...((fresh as any).messages || []),
+      { from: req.user._id, text: reply },
+    ];
   }
-  if (status === 'resolved') ticket.resolvedAt = new Date();
-  await ticket.save();
+  if (status === 'resolved') fresh.resolvedAt = new Date();
+  await fresh.save();
 
   await notifyUser(String(ticket.user), {
     type: 'system',

@@ -1,27 +1,35 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
+import { UserModel } from './User';
+import { AddressModel } from './Address';
 
 // CustomerProfile extends User with customer-only fields. One per customer user.
-const customerProfileSchema = new Schema(
-  {
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true, unique: true, index: true },
-    name: { type: String, trim: true, required: true },
-    avatarUrl: { type: String },
 
-    defaultAddress: { type: Schema.Types.ObjectId, ref: 'Address' },
+export interface CustomerProfileLocation {
+  type: string;
+  coordinates: number[];
+}
 
-    // Optional persistent location (used for nearby restaurant ranking)
-    location: {
-      type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], default: [0, 0] },
-    },
+export interface CustomerProfile {
+  _id: string;
+
+  user: string;
+  name: string;
+  avatarUrl?: string | null;
+
+  defaultAddress?: string | null;
+
+  // Optional persistent location (used for nearby restaurant ranking)
+  location: CustomerProfileLocation;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const CustomerProfileModel = defineModel<CustomerProfile>({
+  table: 'customer_profiles',
+  columns: ['user', 'name', 'avatarUrl', 'defaultAddress', 'location', 'createdAt', 'updatedAt'],
+  refs: {
+    user: () => UserModel,
+    defaultAddress: () => AddressModel,
   },
-  { timestamps: true },
-);
-
-customerProfileSchema.index({ location: '2dsphere' });
-
-export type CustomerProfile = InferSchemaType<typeof customerProfileSchema> & {
-  _id: mongoose.Types.ObjectId;
-};
-
-export const CustomerProfileModel = mongoose.model('CustomerProfile', customerProfileSchema);
+});

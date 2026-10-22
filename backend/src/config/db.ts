@@ -1,32 +1,25 @@
-import mongoose from 'mongoose';
-import { env } from './env';
+import { pingSupabase } from './supabase';
+
+let connected = false;
 
 export async function connectDB(): Promise<void> {
-  mongoose.set('strictQuery', true);
-  mongoose.connection.on('connected', () => {
+  try {
+    await pingSupabase();
+    connected = true;
     // eslint-disable-next-line no-console
-    console.log('[db] MongoDB connected');
-  });
-  mongoose.connection.on('error', (err) => {
+    console.log('[db] Supabase connected');
+  } catch (err) {
+    connected = false;
     // eslint-disable-next-line no-console
-    console.error('[db] MongoDB connection error:', err.message);
-  });
-  mongoose.connection.on('disconnected', () => {
-    // eslint-disable-next-line no-console
-    console.warn('[db] MongoDB disconnected');
-  });
-
-  await mongoose.connect(env.MONGODB_URI, {
-    serverSelectionTimeoutMS: 15_000,
-    maxPoolSize: 10,
-    minPoolSize: 1,
-  });
+    console.error('[db] Supabase connection error:', (err as Error).message);
+    throw err;
+  }
 }
 
 export async function disconnectDB(): Promise<void> {
-  await mongoose.disconnect();
+  connected = false;
 }
 
 export function isDBConnected(): boolean {
-  return mongoose.connection.readyState === 1;
+  return connected;
 }

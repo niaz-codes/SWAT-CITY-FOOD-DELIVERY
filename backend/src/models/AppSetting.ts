@@ -1,18 +1,20 @@
-import mongoose, { type InferSchemaType, Schema } from 'mongoose';
+import { defineModel } from '../db/model';
 
 // Key/value app-wide settings edited from the admin panel.
-const appSettingSchema = new Schema(
-  {
-    key: { type: String, required: true, unique: true, index: true },
-    value: { type: Schema.Types.Mixed, required: true },
-    label: { type: String },
-    description: { type: String },
-  },
-  { timestamps: true },
-);
 
-export type AppSetting = InferSchemaType<typeof appSettingSchema> & {
-  _id: mongoose.Types.ObjectId;
-};
+export interface AppSetting {
+  _id: string;
 
-export const AppSettingModel = mongoose.model('AppSetting', appSettingSchema);
+  key: string;
+  value: any;
+  label?: string | null;
+  description?: string | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const AppSettingModel = defineModel<AppSetting>({
+  table: 'app_settings',
+  columns: ['key', 'value', 'label', 'description', 'createdAt', 'updatedAt'],
+});

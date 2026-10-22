@@ -18,7 +18,12 @@ export function sendCreated<T>(res: Response, data: T): void {
   res.status(201).json({ success: true, data });
 }
 
-/** Standard error body: { success: false, message } */
-export function sendError(res: Response, statusCode: number, message: string): void {
-  res.status(statusCode).json({ success: false, message });
+/** Standard error body: { success: false, message, ...additional } */
+export function sendError(
+  res: Response,
+  statusCode: number,
+  message: string,
+  additional?: Record<string, unknown>,
+): void {
+  res.status(statusCode).json({ success: false, message, ...(additional ?? {}) });
 }

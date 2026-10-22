@@ -26,9 +26,15 @@ async function refreshTargetRating(targetType: ReviewTarget, targetId: string): 
   const avg = Math.round(metrics.avg * 10) / 10;
 
   if (targetType === 'restaurant') {
-    await RestaurantModel.updateOne({ _id: targetId }, { $set: { rating: avg, reviewCount: metrics.count } });
+    await RestaurantModel.updateOne(
+      { _id: targetId },
+      { $set: { rating: avg, reviewCount: metrics.count } },
+    );
   } else if (targetType === 'food') {
-    await FoodItemModel.updateOne({ _id: targetId }, { $set: { rating: avg, reviewCount: metrics.count } });
+    await FoodItemModel.updateOne(
+      { _id: targetId },
+      { $set: { rating: avg, reviewCount: metrics.count } },
+    );
   } else if (targetType === 'rider') {
     await RiderProfileModel.updateOne({ user: targetId }, { $set: { rating: avg } });
   }
@@ -57,10 +63,18 @@ export const createReview = asyncHandler(async (req: AuthRequest, res: Response)
   const isOrderBacked = targetType === 'food' || targetType === 'restaurant';
   if (req.body.orderId || isOrderBacked || targetType === 'ride') {
     if (targetType === 'ride') {
-      const completedRide = await RideModel.exists({ _id: targetId, customer: req.user._id, status: 'completed' });
+      const completedRide = await RideModel.exists({
+        _id: targetId,
+        customer: req.user._id,
+        status: 'completed',
+      });
       verified = Boolean(completedRide);
     } else if (orderId) {
-      const completedOrder = await OrderModel.exists({ _id: orderId, customer: req.user._id, status: 'delivered' });
+      const completedOrder = await OrderModel.exists({
+        _id: orderId,
+        customer: req.user._id,
+        status: 'delivered',
+      });
       verified = Boolean(completedOrder);
     } else {
       // restaurant targeted without explicit order — allow (soft verification off)

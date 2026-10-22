@@ -97,7 +97,10 @@ function salt(): string {
   return value;
 }
 
-async function postJson(path: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function postJson(
+  path: string,
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const res = await fetch(`${jazzcashBaseUrl}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -230,7 +233,12 @@ export const jazzcashProvider: PaymentProvider = {
     // an explicit status is also present it must not contradict the success code.
     const contradicted = ['FAILED', 'FAILURE', 'DECLINED', 'CANCELLED', 'EXPIRED', 'REVERSED'];
     if (status && contradicted.includes(status)) {
-      return { status: 'failed', code: status, reason: responseMessage || `JazzCash reported ${status}`, raw: json };
+      return {
+        status: 'failed',
+        code: status,
+        reason: responseMessage || `JazzCash reported ${status}`,
+        raw: json,
+      };
     }
 
     if (returnedAmountPaisa) {
@@ -262,7 +270,9 @@ export const jazzcashProvider: PaymentProvider = {
  * the query string was tampered with in transit. This is a defence-in-depth check
  * only — the caller must still confirm via inquiry before marking a payment paid.
  */
-export function verifyJazzCashReturnSignature(returnFields: Record<string, string | undefined>): boolean {
+export function verifyJazzCashReturnSignature(
+  returnFields: Record<string, string | undefined>,
+): boolean {
   if (!jazzcashConfigured) return false;
   const fields: JazzFieldMap = {};
   for (const [key, value] of Object.entries(returnFields)) {

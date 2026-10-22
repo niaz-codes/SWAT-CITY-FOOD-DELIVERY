@@ -13,7 +13,7 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
 import { AppError, NOT_FOUND, UNAUTHORIZED } from '../utils/AppError';
 import { notifyUser } from '../services/notification.service';
-import { uploadFile, deleteFile } from '../services/storage.service';
+import { uploadToCloudinary, deleteFromCloudinary } from '../services/cloudinary.service';
 import { clearRiderLocation } from '../services/riderLocation.service';
 import { paginationMeta } from '../utils/helpers';
 
@@ -476,7 +476,7 @@ export const uploadRiderAvatar = asyncHandler(async (req: AuthRequest, res: Resp
   if (!profile) throw NOT_FOUND('Rider');
 
   const previous = profile.avatarPublicId;
-  const uploaded = await uploadFile(file, 'swat-city/riders/avatars');
+  const uploaded = await uploadToCloudinary(file, 'swat-city/riders/avatars');
   const fresh = await findRiderProfile(req.params.id);
   if (!fresh) throw NOT_FOUND('Rider');
   fresh.avatarUrl = uploaded.url;
@@ -488,7 +488,7 @@ export const uploadRiderAvatar = asyncHandler(async (req: AuthRequest, res: Resp
   profile.avatarPublicId = fresh.avatarPublicId;
 
   if (previous && previous !== uploaded.publicId) {
-    void deleteFile(previous).catch(() => undefined);
+    void deleteFromCloudinary(previous).catch(() => undefined);
   }
 
   await notifyUser(String(profile.user), {

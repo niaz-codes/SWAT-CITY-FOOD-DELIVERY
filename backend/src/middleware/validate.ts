@@ -20,7 +20,9 @@ export function validate(schema: ZodSchema, source: 'body' | 'params' | 'query' 
       return next(new AppError(message, 422));
     }
     (req as Request & { validated?: Parsed }).validated = result.data as Parsed;
-    req.body = result.data;
+    // Only body validation may write back to req.body: a params/query schema
+    // must never clobber a body that a later handler still needs.
+    if (source === 'body') req.body = result.data;
     next();
   };
 }

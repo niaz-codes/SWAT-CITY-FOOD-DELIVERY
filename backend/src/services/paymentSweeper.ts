@@ -1,4 +1,4 @@
-import { PaymentModel, OrderModel } from '../models';
+import { PaymentModel, OrderModel, isGatewayPaymentMethod } from '../models';
 import { notifyUser } from './notification.service';
 import { verifyOnlinePayment } from './payment.service';
 
@@ -16,10 +16,6 @@ import { verifyOnlinePayment } from './payment.service';
 
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
 
-function isGatewayMethod(method: string): method is 'easypaisa' | 'jazzcash' {
-  return method === 'easypaisa' || method === 'jazzcash';
-}
-
 export async function sweepExpiredPayments(): Promise<{ expired: number; recovered: number }> {
   const cutoff = new Date();
 
@@ -34,7 +30,7 @@ export async function sweepExpiredPayments(): Promise<{ expired: number; recover
   let recovered = 0;
 
   for (const payment of stale) {
-    if (!isGatewayMethod(payment.method)) continue;
+    if (!isGatewayPaymentMethod(payment.method)) continue;
 
     // Last-chance check with the gateway: if it actually succeeded, we must
     // settle it rather than cancel it.
