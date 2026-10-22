@@ -1,0 +1,58 @@
+# Render Blueprint for the Swat City backend (testing / staging).
+#
+# This file contains NO secret values. Required secrets are marked
+# `sync: false`; enter them in the Render dashboard (or let Render generate
+# the JWT secrets) when creating the Blueprint.
+#
+# The existing production API on Railway is not modified by this file.
+
+services:
+  - type: web
+    name: swat-city-backend-test
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: backend
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: false
+
+    envVars:
+      # Runtime
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+
+      # Browser origin allowed to call the API. Native mobile requests do not
+      # send an Origin header, so this only affects the admin web app.
+      - key: CORS_ORIGIN
+        value: https://admin-web-seven-vert.vercel.app
+
+      # Supabase: use the same project only for a controlled test, or a
+      # separate staging project to keep test data out of production.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: swat-city
+
+      # Auth signing secrets. Render generates new values for this test service.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+
+      # Bootstrap admin. If the Supabase database already has this admin, the
+      # existing password is kept; ADMIN_PASSWORD is only used to create it.
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+
+      # Set this to the final Render URL after the service is created, e.g.
+      # https://swat-city-backend-test.onrender.com, then redeploy.
+      - key: PUBLIC_API_URL
+        sync: false
