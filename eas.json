@@ -7,7 +7,7 @@
     "base": {
       "node": "22.14.0",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://backend-production-73f5.up.railway.app/api"
+        "EXPO_PUBLIC_API_URL": "https://swat-city-backend-test.onrender.com/api"
       }
     },
     "development": {

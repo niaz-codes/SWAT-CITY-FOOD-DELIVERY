@@ -213,6 +213,25 @@ npm run auth:config
 Set `AUTH_EMAIL_REDIRECT_URL` only if a template should keep a link (for
 example `swatcity://auth`); the value must also be listed in Redirect URLs.
 
+### Temporary cutover to the Render API (2026-10-23)
+
+The Railway production API (`https://backend-production-73f5.up.railway.app`)
+is offline: the service is gone from the Railway project and new Railway
+deploys are paused platform-wide. Until Railway is restored, the test
+consumers point at the live Render API instead:
+
+- `eas.json` → `build.base.env.EXPO_PUBLIC_API_URL` =
+  `https://swat-city-backend-test.onrender.com/api` (temporary APK builds).
+- Vercel admin env `VITE_API_BASE_URL` (production scope) =
+  `https://swat-city-backend-test.onrender.com/api`; production redeploy done.
+- `admin-web/.env` (local dev) points at the same URL.
+
+Remember: the Render service has fresh JWT secrets, so old sessions must log
+in again; it is a free instance that sleeps after ~15 minutes idle (first
+request after a nap takes ~1 minute); and this remains a test cutover —
+production API cutover happens in reverse once Railway is restored, by
+reverting these three values and rebuilding.
+
 ## Android APK (internal sharing)
 
 `EXPO_PUBLIC_API_URL` is inlined into the JS bundle at build time, so it must
