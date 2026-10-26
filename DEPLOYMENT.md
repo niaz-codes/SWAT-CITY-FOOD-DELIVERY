@@ -9,14 +9,14 @@
 ## Backend on Railway
 
 The API runs on Railway as the `backend` service in the `swat-city-backend`
-project. Only the `backend/` folder is uploaded; Railway builds it with Nixpacks
-(`npm ci` → `npm run build` → `npm start`) and injects `PORT` itself.
+project. Only the `backend/` folder is uploaded; Railway builds it with Railpack
+(`npm ci` → `tsc` → `npm start`) and injects `PORT` itself.
 
 - **Public URL:** `https://backend-production-73f5.up.railway.app`
 - **Health probe:** `GET /health` (outside `/api`, so it works against the bare origin)
 - **Node version:** `>=22` is required (`@supabase/supabase-js` needs a native
   WebSocket; Node 18/20 crash on boot). Pinned in `backend/package.json`
-  (`engines`) and `NIXPACKS_NODE_VERSION=22`.
+  (`engines`), which Railpack resolves during build.
 - **Runtime env:** every key from `backend/.env` except `PORT` and `NODE_ENV`;
   `NODE_ENV=production` and `PUBLIC_API_URL=https://backend-production-73f5.up.railway.app`
   are set on Railway. Never commit real values.
@@ -38,22 +38,32 @@ railway variable set KEY=value && railway redeploy -y
 
 ### Recreating the `backend` service
 
-The project sometimes loses its service (it happened on 23 Oct 2026); the
-service and its variables are what disappear, the project itself survives. To
-bring it back:
+The project sometimes loses its service (it happened 23–26 Oct 2026); the
+service, its variables and its public domain are what disappear, the project
+itself survives. To bring it back:
 
 ```bash
 cd backend
-railway link       # select the swat-city-backend project, environment production
-railway up         # creates a fresh "backend" service from this working tree
+railway link --project 5fd9f221-eee3-4421-998a-a6438505c372 --environment production --json
+railway add --service backend --json     # creates an empty service
+railway up -y --service backend          # uploads the working tree and deploys
 ```
 
-Then restore the variables and redeploy once so they are all loaded:
+Then restore the variables so the API boots healthy:
 
 ```bash
 pwsh -File ../scripts/railway-backend-vars.ps1   # copies every key from backend/.env
-railway variable set CORS_ORIGIN=https://admin-web-seven-vert.vercel.app --skip-deploys
+railway variable set CORS_ORIGIN=https://admin-web-seven-vert.vercel.app,http://localhost:5173 --skip-deploys
 railway redeploy -y
+```
+
+The public URL also dies with the service. Regenerate it and rename it back to
+the production host so no app change is needed:
+
+```bash
+railway domain --service backend --json                       # generates e.g. backend-production-8af2...
+railway domain list --service backend --json                  # note the domain id
+railway domain update <DOMAIN_ID> --domain backend-production-73f5 --port 8080 --service backend --json
 ```
 
 `CORS_ORIGIN` is the admin web origin. Add other browser origins as a
