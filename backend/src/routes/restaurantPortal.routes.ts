@@ -8,6 +8,7 @@ import {
   getMyOrderDetail,
   getMyRestaurant,
   listMyOrders,
+  myReports,
   updateMyMenuItem,
   updateMyRestaurant,
   uploadMyImage,
@@ -55,6 +56,7 @@ router.post(
 );
 
 // Orders
+router.get('/reports', myReports);
 router.get('/orders', listMyOrders);
 router.get('/orders/:id', validate(idParamSchema, 'params'), getMyOrderDetail);
 router.post(

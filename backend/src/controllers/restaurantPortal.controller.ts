@@ -31,6 +31,107 @@ async function ownedRestaurant(userId: string): Promise<Restaurant> {
 }
 
 // ---------------------------------------------------------------------------
+// Reports
+// ---------------------------------------------------------------------------
+
+// Ranges the portal may ask for. Mirrors the admin reports policy (`quarter`
+// is a rolling 90 days, no calendar-month gymnastics). `today` counts from
+// midnight so an owner can check this morning at a glance.
+const PORTAL_RANGE_DAYS: Record<string, number> = {
+  today: 1,
+  '7d': 7,
+  '30d': 30,
+  quarter: 90,
+};
+
+/**
+ * Owner reports: everything derived only from this restaurant's orders inside
+ * the requested window. Revenue is the gross order total (items + delivery fee
+ * as charged on the order); there is no commission split in the platform yet,
+ * so the panel labels it "revenue" consistently with the admin reports.
+ *
+ * Dish popularity is aggregated from the item snapshots carried by delivered
+ * orders — the snapshot carries `foodItem` (the menu item id) where possible,
+ * falling back to the name for historical rows that predate snapshots.
+ */
+export const myReports = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const restaurant = await ownedRestaurant(req.user._id);
+  const range = String(req.query.range ?? '7d');
+  const days = PORTAL_RANGE_DAYS[range] ?? 7;
+  const from = new Date();
+  from.setDate(from.getDate() - days);
+  from.setHours(0, 0, 0, 0);
+
+  const orders = await OrderModel.find({
+    restaurant: restaurant._id,
+    createdAt: { $gte: from },
+  })
+    .select('status total createdAt items')
+    .lean();
+
+  const delivered = orders.filter((o) => (o as any).status === 'delivered');
+  const grossRevenue = delivered.reduce((sum: number, o: any) => sum + (Number(o.total) || 0), 0);
+
+  const series = new Map<string, { orders: number; revenue: number }>();
+  for (const o of orders as any[]) {
+    const key = new Date(o.createdAt).toISOString().slice(0, 10);
+    const cur = series.get(key) || { orders: 0, revenue: 0 };
+    cur.orders += 1;
+    if ((o.status as string) === 'delivered') {
+      cur.revenue += Number(o.total) || 0;
+    }
+    series.set(key, cur);
+  }
+  const sortedDays = Array.from(series.keys()).sort();
+  const seriesRows = sortedDays.map((date) => ({
+    date,
+    orders: series.get(date)!.orders,
+    revenue: Math.round(series.get(date)!.revenue),
+  }));
+
+  const dishes = new Map<string, { id: string | null; name: string; qty: number; revenue: number }>();
+  for (const o of delivered as any[]) {
+    const items = Array.isArray(o.items) ? o.items : [];
+    for (const it of items) {
+      const id = it?.foodItem ? String(it.foodItem) : null;
+      const key = id ?? String(it?.name ?? 'unknown').toLowerCase();
+      const cur = dishes.get(key) || { id: id ?? null, name: String(it?.name ?? 'Unknown'), qty: 0, revenue: 0 };
+      cur.qty += Number(it?.quantity) || 1;
+      cur.revenue += (Number(it?.price) || 0) * (Number(it?.quantity) || 1);
+      dishes.set(key, cur);
+    }
+  }
+  const topDishes = Array.from(dishes.values())
+    .sort((a, b) => b.qty - a.qty || b.revenue - a.revenue)
+    .slice(0, 8)
+    .map((d) => ({ ...d, revenue: Math.round(d.revenue) }));
+  // Only entries backed by a real menu id can badge a menu row.
+  const popularIds = topDishes.filter((d) => d.id).slice(0, 5).map((d) => d.id) as string[];
+
+  const count = (status: string) => orders.filter((o) => (o as any).status === status).length;
+  const inKitchen = orders.filter((o:any) =>
+    ['confirmed', 'preparing', 'ready', 'rider_assigned'].includes(o.status as string),
+  ).length;
+
+  sendSuccess(res, {
+    range,
+    summary: {
+      deliveredOrders: delivered.length,
+      grossRevenue: Math.round(grossRevenue),
+      avgOrder: delivered.length ? Math.round(grossRevenue / delivered.length) : 0,
+      pending: count('pending'),
+      inKitchen,
+      cancelled: count('cancelled'),
+      rejected: count('rejected'),
+    },
+    series: seriesRows,
+    topDishes,
+    popularIds,
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Profile
 // ---------------------------------------------------------------------------
 
