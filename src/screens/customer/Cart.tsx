@@ -18,6 +18,9 @@ import { spacing } from '../../theme/spacing';
 import { formatCurrency } from '../../utils/format';
 import { haptics } from '../../hooks/useHaptics';
 import { foodApi } from '../../services/api';
+import { buildCartMessage } from '../../utils/whatsapp';
+import { WhatsAppButton } from '../../components/WhatsAppButton';
+import { WhatsAppContactDialog } from '../../components/WhatsAppContactDialog';
 import { Restaurant } from '../../types/domain';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Cart'>;
@@ -62,6 +65,20 @@ export function CartScreen({ navigation }: Props) {
   const minOrder = Number(restaurant?.minOrder ?? 0);
   const belowMin = minOrder > 0 && subtotal < minOrder;
   const shortBy = Math.max(0, minOrder - subtotal);
+  // The chat channel carries the same basket the checkout would, so the
+  // restaurant reads one identical summary either way.
+  const [whatsOpen, setWhatsOpen] = useState(false);
+  const whatsMessage = buildCartMessage({
+    restaurantName: restaurant?.name ?? 'the restaurant',
+    items: items.map((ci) => ({
+      name: ci.menuItem.name,
+      quantity: ci.quantity,
+      unitPrice: ci.menuItem.price,
+    })),
+    subtotal,
+    deliveryFee,
+    total,
+  });
 
   if (items.length === 0) {
     return (
@@ -229,7 +246,22 @@ export function CartScreen({ navigation }: Props) {
           </AppText>
           {!belowMin && <Ionicons name="arrow-forward" size={20} color={colors.onPrimary} />}
         </Pressable>
+
+        {/* Chat-to-order channel: same basket over WhatsApp, nothing charged. */}
+        <WhatsAppButton
+          variant="ghost"
+          label="Order via WhatsApp"
+          sublabel={`Chat the full basket to ${restaurant?.name ?? 'the restaurant'}`}
+          onPress={() => setWhatsOpen(true)}
+        />
       </Animated.View>
+
+      <WhatsAppContactDialog
+        visible={whatsOpen}
+        title="Order this basket on WhatsApp"
+        message={whatsMessage}
+        onClose={() => setWhatsOpen(false)}
+      />
     </View>
   );
 }
@@ -305,6 +337,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: spacing.m,
     paddingTop: spacing.sm,
+    gap: spacing.sm,
     shadowColor: '#000',
     shadowOpacity: 0.1,
     shadowRadius: 16,

@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,6 +21,9 @@ import { useCart } from '../../state/CartContext';
 import { useToast } from '../../state/ToastProvider';
 import { formatCurrency } from '../../utils/format';
 import { haptics } from '../../hooks/useHaptics';
+import { buildBrowseMessage } from '../../utils/whatsapp';
+import { WhatsAppButton } from '../../components/WhatsAppButton';
+import { WhatsAppContactDialog } from '../../components/WhatsAppContactDialog';
 import { MenuItem } from '../../types/domain';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Restaurant'>;
@@ -34,6 +37,7 @@ export function RestaurantScreen({ navigation, route }: Props) {
 
   const restaurant = useAsyncData(() => foodApi.getRestaurant(restaurantId), [restaurantId]);
   const menu = useAsyncData(() => foodApi.getMenu(restaurantId), [restaurantId]);
+  const [whatsOpen, setWhatsOpen] = useState(false);
 
   const grouped = useMemo(() => {
     const map: Record<string, MenuItem[]> = {};
@@ -77,6 +81,15 @@ export function RestaurantScreen({ navigation, route }: Props) {
             subtotal={subtotal}
             onPress={() => navigation.navigate('Cart')}
           />
+        )}
+        {current && (
+          <View style={styles.whatsappWrap}>
+            <WhatsAppButton
+              label="Order on WhatsApp"
+              sublabel={`Chat with ${current.name} to order or ask about the menu.`}
+              onPress={() => setWhatsOpen(true)}
+            />
+          </View>
         )}
         {Object.entries(grouped).map(([category, items], idx) => (
           <Animated.View key={category} entering={FadeInDown.delay(idx * 60).duration(300)}>
@@ -141,6 +154,16 @@ export function RestaurantScreen({ navigation, route }: Props) {
           containerStyle={{ backgroundColor: 'transparent' }}
         />
       </View>
+
+      {/* Chat-to-order channel: pre-filled message, never an app order. */}
+      {current && (
+        <WhatsAppContactDialog
+          visible={whatsOpen}
+          title="Chat to order"
+          message={buildBrowseMessage(current.name)}
+          onClose={() => setWhatsOpen(false)}
+        />
+      )}
     </View>
   );
 }
@@ -308,6 +331,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   hero: { marginTop: spacing.m },
+  whatsappWrap: { marginTop: spacing.sm },
   heroBand: {
     height: 150,
     borderRadius: 26,

@@ -34,6 +34,9 @@ import { useAsyncData } from '../../hooks/useAsyncData';
 import { formatCurrency } from '../../utils/format';
 import { haptics } from '../../hooks/useHaptics';
 import { useToast } from '../../state/ToastProvider';
+import { buildOrderFollowUpMessage } from '../../utils/whatsapp';
+import { WhatsAppButton } from '../../components/WhatsAppButton';
+import { WhatsAppContactDialog } from '../../components/WhatsAppContactDialog';
 import { OrderStatus, type RiderLocationEvent } from '../../types/domain';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OrderTracking'>;
@@ -204,6 +207,9 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [rateOpen, setRateOpen] = useState(false);
   const [rated, setRated] = useState(false);
+  // Chat channel for follow-up questions on an order that already exists in
+  // the app — it never creates or changes this order.
+  const [whatsOpen, setWhatsOpen] = useState(false);
 
   const submitCancel = useCallback(
     async (reason: string) => {
@@ -541,12 +547,21 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
         </Animated.View>
       )}
 
-      {!delivered && status !== 'cancelled' && cancellable && (
-        <Pressable onPress={handleCancel} hitSlop={8} style={styles.cancelBtn}>
-          <AppText variant="smallMedium" weight="semiBold" color={colors.danger}>
-            Cancel order
-          </AppText>
-        </Pressable>
+      {!delivered && status !== 'cancelled' && (
+        <View style={styles.ctaRow}>
+          <WhatsAppButton
+            compact
+            label="Chat about this order on WhatsApp"
+            onPress={() => setWhatsOpen(true)}
+          />
+          {cancellable && (
+            <Pressable onPress={handleCancel} hitSlop={8} style={styles.cancelBtn}>
+              <AppText variant="smallMedium" weight="semiBold" color={colors.danger}>
+                Cancel order
+              </AppText>
+            </Pressable>
+          )}
+        </View>
       )}
 
       {delivered && Boolean(reviewRestaurantId) && (
@@ -564,12 +579,34 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
         </Pressable>
       )}
 
-      {delivered && (
-        <Pressable onPress={() => navigation.goBack()} hitSlop={6} style={styles.cancelBtn}>
-          <AppText variant="smallMedium" weight="semiBold" color={colors.textSecondary}>
-            Back to home
-          </AppText>
-        </Pressable>
+      {delivered && Boolean(reviewRestaurantId) && (
+        <View style={styles.ctaRow}>
+          <Pressable onPress={() => navigation.goBack()} hitSlop={6} style={styles.cancelBtn}>
+            <AppText variant="smallMedium" weight="semiBold" color={colors.textSecondary}>
+              Back to home
+            </AppText>
+          </Pressable>
+          <WhatsAppButton
+            compact
+            label="Chat about this order on WhatsApp"
+            onPress={() => setWhatsOpen(true)}
+          />
+        </View>
+      )}
+
+      {delivered && !reviewRestaurantId && (
+        <View style={styles.ctaRow}>
+          <Pressable onPress={() => navigation.goBack()} hitSlop={6} style={styles.cancelBtn}>
+            <AppText variant="smallMedium" weight="semiBold" color={colors.textSecondary}>
+              Back to home
+            </AppText>
+          </Pressable>
+          <WhatsAppButton
+            compact
+            label="Chat about this order on WhatsApp"
+            onPress={() => setWhatsOpen(true)}
+          />
+        </View>
       )}
 
       <OrderCancelDialog
@@ -583,6 +620,22 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
         busy={busy}
         onConfirm={(rating, comment) => void submitRating(rating, comment)}
         onClose={() => !busy && setRateOpen(false)}
+      />
+      <WhatsAppContactDialog
+        visible={whatsOpen}
+        title="Chat about this order"
+        message={buildOrderFollowUpMessage({
+          restaurantName: current.restaurantName,
+          items: current.items.map((ci) => ({
+            name: ci.menuItem.name,
+            quantity: ci.quantity,
+            unitPrice: ci.menuItem.price,
+          })),
+          total: current.total,
+          statusLabel: statusInfo.text,
+          placedAt: current.placedAt,
+        })}
+        onClose={() => setWhatsOpen(false)}
       />
     </View>
   );
@@ -928,6 +981,7 @@ const styles = StyleSheet.create({
   },
   addressText: { flex: 1 },
   cancelBtn: { alignSelf: 'center', marginTop: spacing.xs, padding: spacing.s },
+  ctaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.s, marginTop: spacing.xs },
   doneBtn: {
     marginHorizontal: spacing.m,
     marginTop: spacing.xs,

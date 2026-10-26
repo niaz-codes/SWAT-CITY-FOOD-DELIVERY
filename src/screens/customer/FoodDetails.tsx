@@ -14,6 +14,9 @@ import { QuantityStepper } from '../../components/QuantityStepper';
 import { Divider } from '../../components/Divider';
 import { SectionHeader } from '../../components/SectionHeader';
 import { FoodCard } from '../../components/FoodCard';
+import { WhatsAppButton } from '../../components/WhatsAppButton';
+import { WhatsAppContactDialog } from '../../components/WhatsAppContactDialog';
+import { buildSingleItemMessage } from '../../utils/whatsapp';
 import { useCart } from '../../state/CartContext';
 import { useToast } from '../../state/ToastProvider';
 import { useThemeColors } from '../../theme';
@@ -32,6 +35,7 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
   const { add, count, restaurantId } = useCart();
   const { success } = useToast();
   const [quantity, setQuantity] = useState(1);
+  const [whatsOpen, setWhatsOpen] = useState(false);
   const { data: popular } = useAsyncData(() => foodApi.getPopular(), []);
 
   const sameRestaurant = restaurantId === null || restaurantId === item.restaurantId;
@@ -137,6 +141,11 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
       >
         <View style={[styles.footerInner, { backgroundColor: colors.surface }]}>
           <QuantityStepper quantity={quantity} onChange={setQuantity} min={1} />
+          <WhatsAppButton
+            compact
+            label="Order on WhatsApp"
+            onPress={() => setWhatsOpen(true)}
+          />
           <Pressable
             onPress={handleAdd}
             disabled={!sameRestaurant && count > 0}
@@ -181,6 +190,19 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
           containerStyle={{ backgroundColor: 'transparent' }}
         />
       </View>
+
+      {/* Chat-to-order channel: pre-filled message, never an app order. */}
+      <WhatsAppContactDialog
+        visible={whatsOpen}
+        title="Order this on WhatsApp"
+        message={buildSingleItemMessage({
+          restaurantName,
+          itemName: item.name,
+          quantity,
+          itemPrice: item.price,
+        })}
+        onClose={() => setWhatsOpen(false)}
+      />
     </View>
   );
 }
