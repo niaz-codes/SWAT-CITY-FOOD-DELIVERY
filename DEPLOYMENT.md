@@ -26,9 +26,40 @@ Deploy:
 ```bash
 cd backend
 railway link            # once per machine (select the swat-city-backend project)
-railway up              # uploads the working tree and deploys
+railway up -y --service backend              # uploads the working tree and deploys
 railway logs --lines 50 # boot logs: [db] Supabase connected, [integrations] ...
 ```
+
+Scoped upload tip: by default `railway up` archives the whole Git project. If a
+deploy builds the wrong app, scope it explicitly, run from the repo root:
+`railway up ./backend --path-as-root --service backend`.
+
+## Admin panel on Railway
+
+The admin console (admin-web) deploys to the same Railway project as an
+`admin-web` service. Railpack auto-detects it as a **vite static site**:
+
+- builds with `npm install` → `npm run build` (`tsc -b && vite build`)
+- serves `dist/` with **Caddy** on the injected `PORT` (8080), SPA routing included
+- build-time env: the service variable `VITE_API_BASE_URL` (Railway API `/api`)
+- **Public URL:** `https://admin-web-production-e2fa.up.railway.app`
+
+The `VITE_API_BASE_URL` variable is inlined at build time — after changing it,
+redeploy (`railway redeploy -y --service admin-web`) so a fresh bundle ships.
+
+Deploy:
+
+```bash
+railway up ./admin-web --path-as-root -y --service admin-web
+```
+
+The `--path-as-root` flag is required: without it the CLI archives the whole
+repo and Railpack patterns on the mobile root `package.json` (`expo start`).
+
+The backend `CORS_ORIGIN` must include this origin
+(`https://admin-web-production-e2fa.up.railway.app`). The panel also stays
+deployable on Vercel (`admin-web/railway.json` is legacy Nixpacks config kept
+for reference; Railpack's auto-detection is what actually builds `admin-web`).
 
 Changing a variable requires a restart to take effect:
 
