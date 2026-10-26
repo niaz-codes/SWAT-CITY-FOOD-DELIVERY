@@ -1,23 +1,34 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
 import Animated, { FadeInUp, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../navigation/types';
 import { AppText } from '../../components/AppText';
+import { AppButton } from '../../components/AppButton';
 import { AppHeader } from '../../components/AppHeader';
 import { MapComponent } from '../../components/MapComponent';
 import { LeafletMap } from '../../components/map/LeafletMap';
 import { Avatar } from '../../components/Avatar';
 import { ErrorState } from '../../components/EmptyState';
 import { useThemeColors } from '../../theme';
-import { spacing } from '../../theme/spacing';
+import { radius, spacing } from '../../theme/spacing';
 import {
   orderApi,
   paymentApi,
+  reviewApi,
   type OrderLiveTracking,
   type PaymentState,
 } from '../../services/api';
+import { ApiError } from '../../services/client';
 import { onSocketEvent } from '../../services/socket';
 import { useAsyncData } from '../../hooks/useAsyncData';
 import { formatCurrency } from '../../utils/format';
@@ -37,7 +48,7 @@ const STEPS: { key: OrderStatus; label: string; icon: keyof typeof Ionicons.glyp
 export function OrderTrackingScreen({ navigation, route }: Props) {
   const { orderId } = route.params;
   const { colors } = useThemeColors();
-  const { success } = useToast();
+  const { success, error: toastError } = useToast();
 
   const PAYMENT_METHOD_LABELS: Record<string, string> = {
     // Display labels only. `cash` and `wallet` stay here so historical orders
@@ -179,6 +190,74 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
 
   const riderBubble = useAnimatedStyle(() => ({ opacity: delivered ? 0 : 1 }));
 
+  /**
+   * Customer cancel + rating flows. The backend decides both: cancel is legal
+   * only until the kitchen hands the order to a rider (pending → ready), and
+   * every cancel needs a reason. Rating posts a restaurant review tied to this
+   * delivered order, so the server verifies the purchase — duplicates answer
+   * 409 and we surface that as "already rated" instead of a hostile error.
+   */
+  const cancellableStatuses: OrderStatus[] = ['placed', 'confirmed', 'preparing', 'ready'];
+  const cancellable = cancellableStatuses.includes(status);
+  const reviewRestaurantId = order.data?.items[0]?.restaurantId ?? '';
+  const [busy, setBusy] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [rateOpen, setRateOpen] = useState(false);
+  const [rated, setRated] = useState(false);
+
+  const submitCancel = useCallback(
+    async (reason: string) => {
+      setBusy(true);
+      try {
+        await orderApi.cancelOrder(orderId, reason);
+        setCancelOpen(false);
+        success('Order cancelled');
+        navigation.goBack();
+      } catch (e) {
+        toastError(
+          e instanceof ApiError && e.status === 409
+            ? 'Too late to cancel - the kitchen already moved on.'
+            : e instanceof Error
+              ? e.message
+              : 'Could not cancel the order.',
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [orderId, navigation, success, toastError],
+  );
+
+  const submitRating = useCallback(
+    async (rating: number, comment: string) => {
+      if (!reviewRestaurantId) return;
+      setBusy(true);
+      try {
+        await reviewApi.create({
+          targetType: 'restaurant',
+          targetId: reviewRestaurantId,
+          rating,
+          comment: comment.trim() ? comment.trim() : undefined,
+          orderId,
+        });
+        setRated(true);
+        setRateOpen(false);
+        success('Thanks for the rating!');
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409) {
+          setRated(true);
+          setRateOpen(false);
+          success('You already rated this order');
+        } else {
+          toastError(e instanceof Error ? e.message : 'Could not submit the rating.');
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    [reviewRestaurantId, orderId, success, toastError],
+  );
+
   const statusInfo = useMemo(() => {
     const map: Record<OrderStatus, { text: string; sub: string }> = {
       placed: { text: 'Order placed', sub: 'Waiting for restaurant to accept' },
@@ -195,8 +274,7 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
 
   const handleCancel = () => {
     haptics.warning();
-    success('Order cancelled');
-    navigation.goBack();
+    setCancelOpen(true);
   };
 
   if (order.loading && !order.data) {
@@ -463,7 +541,7 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
         </Animated.View>
       )}
 
-      {!delivered && status !== 'cancelled' && (
+      {!delivered && status !== 'cancelled' && cancellable && (
         <Pressable onPress={handleCancel} hitSlop={8} style={styles.cancelBtn}>
           <AppText variant="smallMedium" weight="semiBold" color={colors.danger}>
             Cancel order
@@ -471,19 +549,315 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
         </Pressable>
       )}
 
-      {delivered && (
+      {delivered && Boolean(reviewRestaurantId) && (
         <Pressable
-          onPress={() => navigation.goBack()}
-          style={[styles.doneBtn, { backgroundColor: colors.primary }]}
+          onPress={() => {
+            haptics.light();
+            setRateOpen(true);
+          }}
+          disabled={rated}
+          style={[styles.doneBtn, { backgroundColor: rated ? colors.surfaceMuted : colors.primary }]}
         >
-          <AppText variant="title" weight="bold" color={colors.onPrimary}>
+          <AppText variant="title" weight="bold" color={rated ? colors.textMuted : colors.onPrimary}>
+            {rated ? 'Rating received - thank you' : 'Rate your order'}
+          </AppText>
+        </Pressable>
+      )}
+
+      {delivered && (
+        <Pressable onPress={() => navigation.goBack()} hitSlop={6} style={styles.cancelBtn}>
+          <AppText variant="smallMedium" weight="semiBold" color={colors.textSecondary}>
             Back to home
           </AppText>
         </Pressable>
       )}
+
+      <OrderCancelDialog
+        visible={cancelOpen}
+        busy={busy}
+        onConfirm={(reason) => void submitCancel(reason)}
+        onClose={() => !busy && setCancelOpen(false)}
+      />
+      <RateOrderDialog
+        visible={rateOpen}
+        busy={busy}
+        onConfirm={(rating, comment) => void submitRating(rating, comment)}
+        onClose={() => !busy && setRateOpen(false)}
+      />
     </View>
   );
 }
+
+/**
+ * Cancel dialog. The backend requires a reason (min 3 chars), so the presets
+ * are tap-friendly shortcuts and "Other" opens a text field — the combined
+ * value is what gets sent.
+ */
+const CANCEL_REASON_PRESETS = [
+  'Changed my mind',
+  'Ordered by mistake',
+  'The delivery address is wrong',
+  'Taking too long to arrive',
+];
+
+export function OrderCancelDialog({
+  visible,
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  visible: boolean
+  busy: boolean
+  onConfirm: (reason: string) => void
+  onClose: () => void
+}) {
+  const { colors } = useThemeColors();
+  const [custom, setCustom] = useState(false);
+  const [text, setText] = useState('');
+
+  const reason = custom ? text.trim() : '';
+  const ready = custom ? reason.length >= 3 : true;
+
+  const close = () => {
+    setCustom(false);
+    setText('');
+    onClose();
+  };
+
+  return (
+    <Modal
+      transparent
+      visible={visible}
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={close}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={dialogStyles.backdrop}
+      >
+        <Pressable style={StyleSheet.absoluteFill} onPress={busy ? undefined : close} />
+        <View
+          style={[
+            dialogStyles.sheet,
+            { backgroundColor: colors.surfaceRaised, borderRadius: radius.xxl },
+          ]}
+        >
+          <View style={[dialogStyles.iconLine, { backgroundColor: colors.danger }]} />
+          <AppText variant="h4" weight="bold" color={colors.textPrimary}>
+            Cancel this order?
+          </AppText>
+          <AppText variant="small" color={colors.textMuted}>
+            Tell us why - the kitchen reads it and it keeps the refund rules honest.
+          </AppText>
+
+          {!custom ? (
+            <View style={dialogStyles.options}>
+              {CANCEL_REASON_PRESETS.map((preset) => (
+                <AppButton
+                  key={preset}
+                  label={preset}
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onPress={() => {
+                    setText(preset);
+                    onConfirm(preset);
+                  }}
+                  fullWidth
+                />
+              ))}
+              <Pressable onPress={() => setCustom(true)} hitSlop={6} style={dialogStyles.link}>
+                <AppText variant="small" weight="semiBold" color={colors.primary}>
+                  Other reason…
+                </AppText>
+              </Pressable>
+            </View>
+          ) : (
+            <>
+              <TextInput
+                style={[
+                  dialogStyles.input,
+                  { borderColor: colors.borderStrong, color: colors.textPrimary },
+                ]}
+                placeholder="Tell us what happened…"
+                placeholderTextColor={colors.textMuted}
+                value={text}
+                editable={!busy}
+                multiline
+                onChangeText={setText}
+                autoFocus
+              />
+              {!ready && text.length > 0 && (
+                <AppText variant="micro" color={colors.danger}>
+                  At least 3 characters, please.
+                </AppText>
+              )}
+              <View style={dialogStyles.actions}>
+                <AppButton
+                  label="Back"
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onPress={() => {
+                    setCustom(false);
+                  }}
+                  fullWidth={false}
+                />
+                <AppButton
+                  label="Cancel order"
+                  variant="danger"
+                  size="sm"
+                  loading={busy}
+                  disabled={!ready}
+                  onPress={() => onConfirm(reason)}
+                  fullWidth={false}
+                />
+              </View>
+            </>
+          )}
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+const RATE_LABELS = ['', 'Bad', 'Meh', 'Good', 'Great', 'Excellent'] as const;
+
+/** Delivered-order rating screen: 1-5 stars + an optional note. */
+export function RateOrderDialog({
+  visible,
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  visible: boolean
+  busy: boolean
+  onConfirm: (rating: number, comment: string) => void
+  onClose: () => void
+}) {
+  const { colors } = useThemeColors();
+  const [rating, setRating] = useState(0);
+  const [comment, setComment] = useState('');
+
+  const close = () => {
+    setRating(0);
+    setComment('');
+    onClose();
+  };
+
+  return (
+    <Modal
+      transparent
+      visible={visible}
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={close}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={dialogStyles.backdrop}
+      >
+        <Pressable style={StyleSheet.absoluteFill} onPress={busy ? undefined : close} />
+        <View
+          style={[
+            dialogStyles.sheet,
+            { backgroundColor: colors.surfaceRaised, borderRadius: radius.xxl },
+          ]}
+        >
+          <View style={[dialogStyles.iconLine, { backgroundColor: colors.primary }]} />
+          <AppText variant="h4" weight="bold" color={colors.textPrimary}>
+            How was your meal?
+          </AppText>
+          <View style={dialogStyles.stars}>
+            {[1, 2, 3, 4, 5].map((value) => (
+              <Pressable
+                key={value}
+                onPress={() => {
+                  haptics.light();
+                  setRating(value);
+                }}
+                hitSlop={6}
+                disabled={busy}
+                aria-label={`Rate ${value} star${value === 1 ? '' : 's'}`}
+              >
+                <Ionicons
+                  name={value <= rating ? 'star' : 'star-outline'}
+                  size={36}
+                  color={value <= rating ? colors.warning : colors.borderStrong}
+                />
+              </Pressable>
+            ))}
+          </View>
+          {rating > 0 && (
+            <AppText variant="small" weight="semiBold" color={colors.textSecondary}>
+              {RATE_LABELS[rating]}
+            </AppText>
+          )}
+          <TextInput
+            style={[dialogStyles.input, { borderColor: colors.borderStrong, color: colors.textPrimary }]}
+            placeholder="Anything to add? (optional)"
+            placeholderTextColor={colors.textMuted}
+            value={comment}
+            editable={!busy}
+            multiline
+            onChangeText={setComment}
+          />
+          <View style={dialogStyles.actions}>
+            <AppButton
+              label="Skip"
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onPress={close}
+              fullWidth={false}
+            />
+            <AppButton
+              label="Send rating"
+              variant="primary"
+              size="sm"
+              loading={busy}
+              disabled={rating < 1}
+              onPress={() => onConfirm(rating, comment)}
+              fullWidth={false}
+            />
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+const dialogStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.l,
+    backgroundColor: 'rgba(8, 15, 20, 0.55)',
+  },
+  sheet: {
+    width: '100%',
+    maxWidth: 380,
+    padding: spacing.xl,
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  iconLine: { width: 40, height: 4, borderRadius: 2 },
+  options: { width: '100%', gap: spacing.xs, marginTop: spacing.xs },
+  link: { alignSelf: 'center', padding: spacing.s },
+  input: {
+    width: '100%',
+    minHeight: 64,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: spacing.sm,
+    textAlignVertical: 'top',
+    fontSize: 14,
+  },
+  stars: { flexDirection: 'row', gap: spacing.xs, marginVertical: spacing.xs },
+  actions: { flexDirection: 'row', alignSelf: 'stretch', gap: spacing.sm, marginTop: spacing.xs },
+});
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },

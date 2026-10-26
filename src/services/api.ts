@@ -992,6 +992,14 @@ export const orderApi = {
   },
 
   /**
+   * Customer cancel. The backend rejects anything past the cooking stage and
+   * requires a reason (min 3 chars) — the same rules the panel enforces.
+   */
+  async cancelOrder(orderId: string, reason: string): Promise<void> {
+    await httpPost(`/orders/${encodeURIComponent(orderId)}/cancel`, { reason });
+  },
+
+  /**
    * Live delivery tracking.
    *
    * The server decides whether a position may be returned: `trackingActive`
@@ -1039,6 +1047,24 @@ export const orderApi = {
           }
         : null,
     };
+  },
+};
+
+/**
+ * Order-backed reviews. The backend verifies the purchase server-side (the
+ * delivered order must belong to the caller), so passing `orderId` is what
+ * marks the review verified; a duplicate submission answers 409 and the UI
+ * treats that as "already rated".
+ */
+export const reviewApi = {
+  async create(input: {
+    targetType: 'restaurant' | 'food' | 'rider' | 'ride';
+    targetId: string;
+    rating: number;
+    comment?: string;
+    orderId?: string;
+  }): Promise<void> {
+    await httpPost('/reviews', input);
   },
 };
 
