@@ -63,8 +63,14 @@ export const setBaseLocationSchema = z.object({
   label: z.string().trim().max(120).optional(),
 });
 
-export const acceptDeliverySchema = z.object({
-  orderId: z.string().min(3),
+export const acceptDeliverySchema = z.object({  orderId: z.string().min(3),
+});
+
+/**
+ * Rider toggles online/offline. Only approved riders may come online.
+ */
+export const onlineStatusSchema = z.object({
+  online: z.boolean({ required_error: 'Specify online true or false' }),
 });
 
 export const acceptRideSchema = z.object({

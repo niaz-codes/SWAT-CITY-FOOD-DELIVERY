@@ -4,7 +4,7 @@ import { UNAUTHORIZED } from './AppError';
 
 export interface AccessClaims {
   sub: string;
-  role: 'customer' | 'rider' | 'admin';
+  role: 'customer' | 'rider' | 'restaurant' | 'admin';
   type: 'access';
 }
 

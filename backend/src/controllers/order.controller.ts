@@ -8,7 +8,6 @@ import {
   advanceOrderStatus,
   cancelOrder,
   computeOrderTotals,
-  getOrderForUser,
   placeOrder,
 } from '../services/order.service';
 import { initiateOnlinePayment } from '../services/payment.service';
@@ -174,8 +173,7 @@ export const orderDetail = asyncHandler(async (req: AuthRequest, res: Response) 
     .lean();
   if (!order) throw NOT_FOUND('Order');
   if (String(order.customer) !== req.user._id) {
-    const { riderId } = order.rider ? { riderId: String(order.rider) } : { riderId: '' };
-    if (riderId !== req.user._id) throw new AppError('You can only access your own orders', 403);
+    throw new AppError('You can only access your own orders', 403);
   }
   sendSuccess(res, { order });
 });
@@ -213,14 +211,6 @@ export const cancelOrderCtrl = asyncHandler(async (req: AuthRequest, res: Respon
     status: 'cancelled',
   });
   sendSuccess(res, { order });
-});
-
-export const customerAdvanceStatus = asyncHandler(async (req: AuthRequest, res: Response) => {
-  // Customers cannot skip lifecycle gates; this route is a safety-net for
-  // demo/tracking: they may only request the next valid state for display.
-  if (!req.user) throw UNAUTHORIZED();
-  const order = await getOrderForUser(req.params.id, req.user._id);
-  sendSuccess(res, { order, validNext: order.status });
 });
 
 export type { OrderStatus };

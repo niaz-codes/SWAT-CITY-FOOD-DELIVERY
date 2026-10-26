@@ -1,6 +1,7 @@
 import {
   CustomerProfileModel,
   RiderProfileModel,
+  RestaurantModel,
   UserModel,
   WalletModel,
   type UserRole,
@@ -90,6 +91,9 @@ async function rollbackUnverifiedRegistration(userId: string): Promise<void> {
     CustomerProfileModel.deleteOne({ user: userId }).catch(() => undefined),
     RiderProfileModel.deleteOne({ user: userId }).catch(() => undefined),
     WalletModel.deleteOne({ user: userId }).catch(() => undefined),
+    // A restaurant-owner registration also created the restaurant record; it
+    // must not survive a rolled-back (failed verification) attempt.
+    RestaurantModel.deleteOne({ ownerUser: userId }).catch(() => undefined),
   ]);
   await UserModel.deleteOne({ _id: userId, verified: false }).catch(() => undefined);
 }
@@ -177,6 +181,95 @@ export async function registerUser(input: {
 }
 
 /**
+ * Register a restaurant owner together with the restaurant they will manage.
+ *
+ * Mirrors `registerUser` (unverified account → emailed OTP → session on
+ * verification) with two extras:
+ *  - the account holds role `restaurant` and is never session-usable before the
+ *    email code is confirmed;
+ *  - the companion restaurant is created unapproved (`isApproved: false`,
+ *    `status: 'closed'`) so nothing shows up in the customer app until an
+ *    admin approves it in the admin panel.
+ */
+export async function registerRestaurantOwner(input: {
+  name: string;
+  phone: string;
+  email?: string;
+  password: string;
+  restaurantName: string;
+  cuisine?: string;
+  category?: string;
+  description?: string;
+  emoji?: string;
+  phoneRestaurant?: string;
+  addressLine?: string;
+  area?: string;
+  latitude?: number;
+  longitude?: number;
+}): Promise<OtpChallengeResponse> {
+  const email = input.email?.trim().toLowerCase();
+  if (!email) throw new AppError('An email address is required', 422);
+
+  const normalized = normalizePhone(input.phone);
+  const existing = await UserModel.findOne({
+    $or: [{ phone: normalized }, { email }],
+  });
+  if (existing) {
+    throw CONFLICT(
+      existing.phone === normalized
+        ? 'An account with this phone already exists'
+        : 'An account with this email already exists',
+    );
+  }
+
+  const password = await hashPassword(input.password);
+  const user = await UserModel.create({
+    name: input.name,
+    phone: normalized,
+    email,
+    role: 'restaurant',
+    password,
+    verified: false,
+    isApproved: false,
+    pendingApproval: true,
+  });
+
+  await RestaurantModel.create({
+    name: input.restaurantName,
+    description: input.description,
+    cuisine: input.cuisine,
+    category: input.category,
+    emoji: input.emoji,
+    ownerName: input.name,
+    phone: input.phoneRestaurant,
+    addressLine: input.addressLine,
+    area: input.area,
+    ownerUser: user._id,
+    isApproved: false,
+    status: 'closed',
+    location:
+      typeof input.latitude === 'number' && typeof input.longitude === 'number'
+        ? { type: 'Point', coordinates: [input.longitude, input.latitude] }
+        : undefined,
+  });
+
+  // Wallets are for customers/riders; an owner account does not hold one.
+  const issued = await issueEmailOtp({ email, purpose: 'register', name: input.name }).catch(
+    async (error) => {
+      await rollbackUnverifiedRegistration(String(user._id));
+      throw error;
+    },
+  );
+  try {
+    assertEmailSent(issued);
+  } catch (error) {
+    await rollbackUnverifiedRegistration(String(user._id));
+    throw error;
+  }
+  return buildOtpChallenge({ userId: String(user._id), email, purpose: 'register', issued });
+}
+
+/**
  * Step 1 of email + password sign-in.
  *
  * The credentials are checked exactly as before, but instead of a session the
@@ -251,6 +344,20 @@ export function assertEmailSent(issued: {
 }
 
 /**
+ * Verify welcome note per role, so a pending owner/rider is not told their
+ * account is fully ready when the admin review step is still pending.
+ */
+function welcomeBody(role: UserRole): string {
+  if (role === 'rider') {
+    return 'Your profile is under review. You can browse until you are approved to take orders.';
+  }
+  if (role === 'restaurant') {
+    return 'Your restaurant is under review. You can set up your menu now; it goes live once an admin approves it.';
+  }
+  return 'Your account is ready. Enjoy your first order!';
+}
+
+/**
  * Step 2 of email-OTP: verify the emailed code and, on success, mint the
  * session. Shared by the `login` and `register` purposes — the only difference
  * is that a registration also flips `verified` on and sends the welcome note.
@@ -272,10 +379,7 @@ export async function verifyEmailOtp(challengeToken: string, otp: string): Promi
     await notifyUser(String(user._id), {
       type: 'system',
       title: 'Welcome to Swat City Food Delivery',
-      body:
-        user.role === 'rider'
-          ? 'Your profile is under review. You can browse until you are approved to take orders.'
-          : 'Your account is ready. Enjoy your first order!',
+      body: welcomeBody(user.role),
     });
   }
 

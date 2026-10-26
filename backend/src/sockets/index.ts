@@ -87,8 +87,14 @@ export function initSocket(server: HttpServer): Server {
 
   const serverOpts = {
     cors: {
-      origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(','),
-      credentials: true,
+      // Same rules as the REST app (app.ts): trim stray whitespace around
+      // origins and disable credentials for the dev wildcard so socket and
+      // REST behaviour cannot drift apart.
+      origin:
+        env.CORS_ORIGIN.trim() === '*'
+          ? true
+          : env.CORS_ORIGIN.split(',').map((value) => value.trim()).filter(Boolean),
+      credentials: env.CORS_ORIGIN.trim() !== '*',
     },
     maxHttpBufferSize: 1e6,
   };

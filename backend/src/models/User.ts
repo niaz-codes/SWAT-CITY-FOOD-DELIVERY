@@ -1,6 +1,6 @@
 import { defineModel } from '../db/model';
 
-export const USER_ROLES = ['customer', 'rider', 'admin'] as const;
+export const USER_ROLES = ['customer', 'rider', 'restaurant', 'admin'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
 export const USER_STATUSES = ['active', 'suspended'] as const;

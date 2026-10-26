@@ -329,6 +329,40 @@ async function notifyAvailableRiders(order: OrderDoc, restaurantName: string): P
 }
 
 /**
+ * Notify the restaurant owner of an order event (new order / lifecycle step /
+ * cancellation). The owner account is resolvable through the restaurant's
+ * `ownerUser`; failures are swallowed so an owner alert can never break a
+ * customer-facing flow.
+ */
+async function notifyRestaurantOwner(
+  order: { _id?: unknown; restaurant: unknown; orderNumber?: string | null; status?: string },
+  event: NotificationEvent,
+  title: string,
+  body: string,
+): Promise<void> {
+  try {
+    const restaurant = await RestaurantModel.findById(order.restaurant)
+      .select('ownerUser name')
+      .lean();
+    if (!restaurant?.ownerUser) return;
+    await notifyUser(String(restaurant.ownerUser), {
+      type: 'order',
+      event,
+      refId: String(order._id ?? ''),
+      title,
+      body,
+      data: {
+        orderId: String(order._id ?? ''),
+        orderNumber: order.orderNumber ?? '',
+        status: order.status ?? '',
+      },
+    });
+  } catch {
+    // Owner alerting is best-effort.
+  }
+}
+
+/**
  * placeOrder — creates the Order, computes totals server-side, records the
  * payment intent and clears the cart.
  *
@@ -623,6 +657,14 @@ async function finaliseOrder(args: {
         });
     }
     await notifyAdminsNewOrder(order);
+
+    // And the restaurant owner (portal) gets the same alert.
+    await notifyRestaurantOwner(
+      order,
+      'order_placed',
+      'New order received',
+      `Order ${order.orderNumber} for Rs ${order.total} is waiting for you to accept.`,
+    ).catch(() => undefined);
   }
 
   return { order, payment: args.payment };
@@ -643,7 +685,8 @@ export async function getOrderForUser(orderId: string, userId: string): Promise<
 export async function advanceOrderStatus(
   orderId: string,
   to: OrderStatus,
-  actorId: string,
+  actorId = 'system',
+  source: 'admin' | 'restaurant' | 'system' = 'admin',
 ): Promise<Order> {
   const order = await OrderModel.findById(orderId);
   if (!order) throw NOT_FOUND('Order');
@@ -663,7 +706,10 @@ export async function advanceOrderStatus(
   );
   if (!updated) throw CONFLICT('Order status changed concurrently. Refresh and try again.');
 
-  updated.statusHistory.push({ status: to, note: `Status updated to ${to}` });
+  updated.statusHistory.push({
+    status: to,
+    note: `Status updated to ${to} by ${source}`,
+  });
   await updated.save();
 
   // Scope the live update to the people the order belongs to. A global
@@ -717,6 +763,17 @@ export async function advanceOrderStatus(
   // online right now. Previously the order sat in the feed with nobody told.
   if (to === 'ready' && !updated.rider) {
     await notifyAvailableRiders(updated, restaurantName);
+  }
+
+  // The restaurant owner follows the order while it is in their kitchen;
+  // pickup / delivery steps are rider + customer concerns.
+  if (to === 'confirmed' || to === 'preparing' || to === 'rider_assigned') {
+    await notifyRestaurantOwner(
+      updated,
+      ORDER_STATUS_EVENTS[to],
+      copy.title,
+      copy.body(updated.orderNumber ?? '', restaurantName),
+    ).catch(() => undefined);
   }
 
   return updated;
@@ -792,7 +849,7 @@ export async function assignRiderToOrder(
 export async function cancelOrder(input: {
   orderId: string;
   actorId: string;
-  by: 'customer' | 'rider' | 'admin' | 'system';
+  by: 'customer' | 'rider' | 'restaurant' | 'admin' | 'system';
   reason: string;
 }): Promise<Order> {
   const order = await OrderModel.findById(input.orderId);
@@ -890,6 +947,17 @@ export async function cancelOrder(input: {
       body: `Order ${cancelled.orderNumber} was cancelled. Please ignore it.`,
       data: { orderId: String(cancelled._id), orderNumber: cancelled.orderNumber, status: 'cancelled' },
     });
+  }
+
+  // Tell the restaurant owner when someone else cancelled one of their orders
+  // (customer cancel while pending, admin, or system payment failure).
+  if (input.by !== 'restaurant') {
+    await notifyRestaurantOwner(
+      cancelled,
+      'order_cancelled',
+      'Order cancelled',
+      `Order ${cancelled.orderNumber} was cancelled (${input.by}). Reason: ${input.reason}`,
+    ).catch(() => undefined);
   }
 
   return cancelled;

@@ -15,13 +15,7 @@ import { AppError, NOT_FOUND, UNAUTHORIZED } from '../utils/AppError';
 import { notifyUser } from '../services/notification.service';
 import { uploadToCloudinary, deleteFromCloudinary } from '../services/cloudinary.service';
 import { clearRiderLocation } from '../services/riderLocation.service';
-import { paginationMeta } from '../utils/helpers';
-
-const startOfDay = (d = new Date()) => {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-};
+import { paginationMeta, startOfDay } from '../utils/helpers';
 
 const dayLabel = (d: Date) => d.toLocaleDateString('en-US', { weekday: 'short' }).slice(0, 3);
 
@@ -657,11 +651,13 @@ export const liveRiders = asyncHandler(async (req: AuthRequest, res: Response) =
 // Reports
 // ---------------------------------------------------------------------------
 
+// Ranges the panel may ask for. `quarter` covers the business quarter view
+// (90 days); `year` is a rolling 360 - no calendar-month gymnastics.
 const RANGE_DAYS: Record<string, number> = {
   today: 1,
   '7d': 7,
   '30d': 30,
-  month: 90,
+  quarter: 90,
   year: 360,
   all: 99999,
 };

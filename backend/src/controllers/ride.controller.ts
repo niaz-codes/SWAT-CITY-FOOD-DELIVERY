@@ -77,6 +77,10 @@ export const rideDetail = asyncHandler(async (req: AuthRequest, res: Response) =
   if (!req.user) throw UNAUTHORIZED();
   const ride = await RideModel.findById(req.params.id)
     .populate('rider', 'name phone avatarUrl')
+    // The rider needs the customer's name + number to call them at the pickup
+    // point; exposing both sides of a ride to each other mirrors order
+    // tracking, which already returns the rider's phone to the customer.
+    .populate('customer', 'name phone')
     .lean();
   if (!ride) throw NOT_FOUND('Ride');
   if (String(ride.customer) !== req.user._id && String(ride.rider) !== req.user._id) {

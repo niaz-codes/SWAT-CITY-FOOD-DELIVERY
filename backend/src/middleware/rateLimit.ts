@@ -25,6 +25,18 @@ export const otpRateLimiter = rateLimit({
 });
 
 /**
+ * Refresh-token exchange. A tighter bucket than the global limiter so a leaked
+ * refresh token cannot be brute-forced against /auth/refresh at API speed.
+ */
+export const authRefreshRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many session refreshes. Please try again later.' },
+});
+
+/**
  * Password reset is deliberately stricter than login: an attacker can use it
  * to spam mailboxes or brute-force tokens.
  */

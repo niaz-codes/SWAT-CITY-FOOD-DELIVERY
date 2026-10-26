@@ -55,3 +55,4 @@ export function requireRole(
 export const requireAdmin = requireRole('admin');
 export const requireRider = requireRole('rider');
 export const requireCustomer = requireRole('customer');
+export const requireRestaurant = requireRole('restaurant');

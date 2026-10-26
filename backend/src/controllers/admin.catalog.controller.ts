@@ -1,5 +1,5 @@
 import type { Response } from 'express';
-import { FoodCategoryModel, FoodItemModel, RestaurantModel } from '../models';
+import { FoodCategoryModel, FoodItemModel, RestaurantModel, UserModel } from '../models';
 import type { AuthRequest } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
@@ -13,9 +13,12 @@ import { uploadToCloudinary } from '../services/cloudinary.service';
 
 export const adminListRestaurants = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
-  const { search, status, page = '1', limit = '20' } = req.query;
+  const { search, status, approval, page = '1', limit = '20' } = req.query;
   const query: Record<string, unknown> = { deletedAt: null };
   if (status && status !== 'all') query.status = status;
+  // `approval=pending` isolates the owner-registrations waiting for review.
+  if (approval === 'pending') query.isApproved = false;
+  else if (approval === 'approved') query.isApproved = true;
   if (search) query.name = { $regex: String(search), $options: 'i' };
   const p = Math.max(1, Number(page) || 1);
   const l = Math.min(100, Math.max(1, Number(limit) || 20));
@@ -24,6 +27,7 @@ export const adminListRestaurants = asyncHandler(async (req: AuthRequest, res: R
       .sort({ createdAt: -1 })
       .skip((p - 1) * l)
       .limit(l)
+      .populate('ownerUser', 'name email phone')
       .lean(),
     RestaurantModel.countDocuments(query),
   ]);
@@ -53,6 +57,23 @@ export const adminUpdateRestaurant = asyncHandler(async (req: AuthRequest, res: 
     delete update.lat;
     delete update.lng;
   }
+
+  // Attach an owner in the admin panel by email.
+  if (typeof body.ownerEmail === 'string' && body.ownerEmail.trim() !== '') {
+    const owner = await UserModel.findOne({
+      email: String(body.ownerEmail).trim().toLowerCase(),
+      role: 'restaurant',
+    });
+    if (!owner) {
+      throw new AppError(
+        'No restaurant-owner account exists with that email. The owner must register first.',
+        404,
+      );
+    }
+    update.ownerUser = owner._id;
+    delete update.ownerEmail;
+  }
+
   const restaurant = await RestaurantModel.findOneAndUpdate(
     { _id: req.params.id },
     { $set: update },

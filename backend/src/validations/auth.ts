@@ -95,8 +95,7 @@ const longitude = z.coerce
  * Fields arrive as strings because this request is `multipart/form-data` (the
  * photo travels with it), so the coordinates and year count are coerced.
  */
-export const riderRegisterSchema = z.object({
-  name: z.string().trim().min(2, 'Name must be at least 2 characters').max(60),
+export const riderRegisterSchema = z.object({  name: z.string().trim().min(2, 'Name must be at least 2 characters').max(60),
   phone: z.string().regex(phoneRegex, 'Enter a valid Pakistani mobile number (03xxxxxxxxx)'),
   email: z.string().trim().email('Enter a valid email address'),
   password: passwordPolicy,
@@ -122,6 +121,41 @@ export const riderRegisterSchema = z.object({
 });
 
 export type RiderRegisterInput = z.infer<typeof riderRegisterSchema>;
+
+// --- Restaurant owner registration -----------------------------------------
+
+const latitudeNumber = z.coerce
+  .number({ invalid_type_error: 'Pick your location on the map' })
+  .min(-90, 'Invalid latitude')
+  .max(90, 'Invalid latitude');
+const longitudeNumber = z.coerce
+  .number({ invalid_type_error: 'Pick your location on the map' })
+  .min(-180, 'Invalid longitude')
+  .max(180, 'Invalid longitude');
+
+/**
+ * Restaurant owner self-registration. Creates the owner account AND the
+ * restaurant record in one step; the restaurant stays unapproved until an
+ * admin approves it in the admin panel.
+ */
+export const restaurantRegisterSchema = z.object({
+  name: z.string().trim().min(2, 'Name must be at least 2 characters').max(60),
+  phone: z.string().regex(phoneRegex, 'Enter a valid Pakistani mobile number (03xxxxxxxxx)'),
+  email: z.string().trim().email('Enter a valid email address'),
+  password: passwordPolicy,
+  restaurantName: z.string().trim().min(2, 'Restaurant name is required').max(80),
+  cuisine: z.string().trim().max(60).optional(),
+  category: z.string().trim().max(60).optional(),
+  description: z.string().trim().max(500).optional(),
+  emoji: z.string().max(4).optional(),
+  phoneRestaurant: z.string().trim().max(20).optional(),
+  addressLine: z.string().trim().max(200).optional(),
+  area: z.string().trim().max(60).optional(),
+  latitude: latitudeNumber.optional(),
+  longitude: longitudeNumber.optional(),
+});
+
+export type RestaurantRegisterInput = z.infer<typeof restaurantRegisterSchema>;
 
 // --- Password reset --------------------------------------------------------
 

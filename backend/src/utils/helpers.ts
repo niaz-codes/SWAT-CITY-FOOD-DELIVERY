@@ -2,6 +2,13 @@ import bcrypt from 'bcryptjs';
 
 const SALT_ROUNDS = 10;
 
+/** Local-midnight start of the day a date falls in (used for daily stats). */
+export function startOfDay(d = new Date()): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
 export function hashPassword(plain: string): Promise<string> {
   return bcrypt.hash(plain, SALT_ROUNDS);
 }

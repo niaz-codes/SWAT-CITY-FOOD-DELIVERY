@@ -14,7 +14,7 @@ export const listRestaurants = asyncHandler(async (req: Request, res: Response) 
   const p = Math.max(1, Number(page) || 1);
   const l = Math.min(50, Math.max(1, Number(limit) || 20));
 
-  const query: Record<string, unknown> = { deletedAt: null };
+  const query: Record<string, unknown> = { deletedAt: null, isApproved: true };
   if (category && category !== 'All') query.category = category;
   if (search) {
     query.$or = [
@@ -81,7 +81,11 @@ export const listRestaurants = asyncHandler(async (req: Request, res: Response) 
 });
 
 export const getRestaurant = asyncHandler(async (req: Request, res: Response) => {
-  const restaurant = await RestaurantModel.findOne({ _id: req.params.id, deletedAt: null }).lean();
+  const restaurant = await RestaurantModel.findOne({
+    _id: req.params.id,
+    deletedAt: null,
+    isApproved: true,
+  }).lean();
   if (!restaurant) throw NOT_FOUND('Restaurant');
   const items = await FoodItemModel.find({
     restaurant: restaurant._id,
@@ -95,6 +99,7 @@ export const listFeaturedRestaurants = asyncHandler(async (_req: Request, res: R
   const restaurants = await RestaurantModel.find({
     featured: true,
     status: 'open',
+    isApproved: true,
     deletedAt: null,
   })
     .sort({ rating: -1 })
@@ -108,8 +113,18 @@ export const listFoodCategories = asyncHandler(async (_req: Request, res: Respon
 });
 
 export const getMenu = asyncHandler(async (req: Request, res: Response) => {
+  // Gate on the owning restaurant so menu items of an unapproved (hidden)
+  // restaurant cannot be listed by guessing the restaurant id.
+  const restaurant = await RestaurantModel.findOne({
+    _id: req.params.id,
+    deletedAt: null,
+    isApproved: true,
+  })
+    .select('_id')
+    .lean();
+  if (!restaurant) throw NOT_FOUND('Restaurant');
   const items = await FoodItemModel.find({
-    restaurant: req.params.id,
+    restaurant: restaurant._id,
     available: true,
     deletedAt: null,
   }).sort('-rating');
@@ -118,17 +133,23 @@ export const getMenu = asyncHandler(async (req: Request, res: Response) => {
 
 export const getFoodItem = asyncHandler(async (req: Request, res: Response) => {
   const item = await FoodItemModel.findById(req.params.id)
-    .populate('restaurant', 'name gradient emoji')
+    .populate('restaurant', 'name gradient emoji isApproved')
     .lean();
   if (!item || item.deletedAt) throw NOT_FOUND('Food item');
+  if ((item.restaurant as unknown as { isApproved?: boolean })?.isApproved === false) {
+    throw NOT_FOUND('Food item');
+  }
   sendSuccess(res, { item });
 });
 
 export const listPopularFood = asyncHandler(async (_req: Request, res: Response) => {
-  const items = await FoodItemModel.find({ popular: true, available: true, deletedAt: null })
+  const items = (await FoodItemModel.find({ popular: true, available: true, deletedAt: null })
     .sort('-rating')
-    .limit(12);
-  sendSuccess(res, { items });
+    .limit(12)
+    .populate('restaurant', 'isApproved')) as any[];
+  // Popular dishes of a hidden restaurant must not leak through this rail.
+  const visible = items.filter((i) => (i.restaurant as any)?.isApproved !== false);
+  sendSuccess(res, { items: visible });
 });
 
 export const searchCatalog = asyncHandler(async (req: Request, res: Response) => {
@@ -137,9 +158,10 @@ export const searchCatalog = asyncHandler(async (req: Request, res: Response) =>
     sendSuccess(res, { restaurants: [], dishes: [] });
     return;
   }
-  const [restaurants, dishes] = await Promise.all([
+  const [restaurantRows, dishRows] = await Promise.all([
     RestaurantModel.find({
       deletedAt: null,
+      isApproved: true,
       $or: [
         { name: { $regex: q, $options: 'i' } },
         { cuisine: { $regex: q, $options: 'i' } },
@@ -153,10 +175,13 @@ export const searchCatalog = asyncHandler(async (req: Request, res: Response) =>
       deletedAt: null,
       $or: [{ name: { $regex: q, $options: 'i' } }, { description: { $regex: q, $options: 'i' } }],
     })
-      .populate('restaurant', 'name gradient emoji')
+      .populate('restaurant', 'name gradient emoji isApproved')
       .limit(20)
       .lean(),
   ]);
+  // Dishes belonging to a hidden restaurant stay hidden from search too.
+  const restaurants = restaurantRows;
+  const dishes = (dishRows as any[]).filter((d) => (d.restaurant as any)?.isApproved !== false);
   sendSuccess(res, { restaurants, dishes });
 });
 

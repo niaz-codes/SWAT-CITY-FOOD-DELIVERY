@@ -4,7 +4,7 @@ declare global {
     interface Request {
       user?: {
         _id: string;
-        role: 'customer' | 'rider' | 'admin';
+        role: 'customer' | 'rider' | 'restaurant' | 'admin';
       };
     }
   }

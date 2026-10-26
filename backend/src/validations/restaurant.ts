@@ -36,7 +36,13 @@ export const createRestaurantSchema = z.object({
     .optional(),
 });
 
-export const updateRestaurantSchema = createRestaurantSchema.partial();
+export const updateRestaurantSchema = createRestaurantSchema.partial().extend({
+  // Admin-only management switches (never exposed on the owner portal):
+  isApproved: z.boolean().optional(),
+  /** Attach an owner account by email. The user must exist with role `restaurant`. */
+  ownerEmail: z.string().trim().toLowerCase().email().optional(),
+  ownerUser: z.string().min(3).nullable().optional(),
+});
 
 export const createFoodItemSchema = z.object({
   restaurantId: z.string().min(3),
@@ -72,3 +78,56 @@ export const createFoodCategorySchema = z.object({
 });
 
 export const idParamSchema = z.object({ id: mongoId });
+
+// ---------------------------------------------------------------------------
+// Restaurant owner portal (role `restaurant`, scoped to their own restaurant)
+// ---------------------------------------------------------------------------
+
+/**
+ * Profile fields an owner may edit themselves. Deliberately excludes anything
+ * platform-managed: `featured`, `rating`/`reviewCount`, `isApproved`,
+ * `ownerUser`, image fields and `slug`.
+ */
+export const restaurantProfileUpdateSchema = z.object({
+  name: z.string().trim().min(2).max(80).optional(),
+  description: z.string().trim().max(500).optional(),
+  cuisine: z.string().trim().max(60).optional(),
+  category: z.string().trim().max(60).optional(),
+  tags: z.array(z.string().trim().max(30)).max(10).optional(),
+  ownerName: z.string().trim().max(80).optional(),
+  phone: z.string().trim().max(20).optional(),
+  addressLine: z.string().trim().max(200).optional(),
+  area: z.string().trim().max(60).optional(),
+  deliveryTimeMin: z.number().int().min(1).max(300).optional(),
+  deliveryFee: z.number().min(0).optional(),
+  minOrder: z.number().min(0).optional(),
+  freeDelivery: z.boolean().optional(),
+  promo: z.string().trim().max(120).optional(),
+  emoji: z.string().max(4).optional(),
+  hours: z
+    .object({
+      open: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+      close: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    })
+    .optional(),
+  lat: z.number().min(-90).max(90).optional(),
+  lng: z.number().min(-180).max(180).optional(),
+  // Opening/closing the kitchen is the owner's call, not an admin's.
+  status: z.enum(['closed', 'open', 'busy']).optional(),
+});
+
+/** A menu item an owner creates: `restaurantId` is forced server-side. */
+export const restaurantMenuItemCreateSchema = createFoodItemSchema.omit({ restaurantId: true });
+
+/** The lifecycle steps a restaurant owner may move an order to. */
+export const restaurantAdvanceOrderSchema = z.object({
+  status: z.enum(['confirmed', 'preparing', 'ready'], {
+    errorMap: () => ({
+      message: 'Choose one of: confirmed, preparing, ready',
+    }),
+  }),
+});
+
+export const restaurantCancelOrderSchema = z.object({
+  reason: z.string().trim().min(3, 'A reason is required to cancel').max(200),
+});

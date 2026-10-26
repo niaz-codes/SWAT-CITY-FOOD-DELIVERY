@@ -23,6 +23,7 @@ import {
   setBaseLocationSchema,
   acceptDeliverySchema,
   completeDeliveryStatusSchema,
+  onlineStatusSchema,
 } from '../validations/rider';
 
 const router = Router();
@@ -31,7 +32,7 @@ router.use(requireAuth, requireRider);
 
 router.get('/profile', getRiderProfile);
 router.patch('/profile', validate(updateRiderProfileSchema.partial()), updateRiderProfile);
-router.post('/online-status', setOnlineStatus);
+router.post('/online-status', validate(onlineStatusSchema), setOnlineStatus);
 
 // Vehicle changes are validated for duplicate plates and held for admin review.
 router.post('/vehicle', validate(updateVehicleSchema), requestVehicleUpdate);

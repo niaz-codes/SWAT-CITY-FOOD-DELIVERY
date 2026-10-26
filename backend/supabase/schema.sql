@@ -650,6 +650,50 @@ create unique index if not exists wallet_transactions_withdrawal_release_key
   on public.wallet_transactions (reference) where reference like 'wd_release\_%';
 
 -- ---------------------------------------------------------------------------
+-- Schema migrations (additive; applied after every CREATE TABLE so this file
+-- stays runnable on both fresh and existing databases)
+-- ---------------------------------------------------------------------------
+
+-- users.role: widen the allowed roles with `restaurant` (owner accounts).
+do $$
+declare c text;
+begin
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.users'::regclass and contype = 'c'
+      and pg_get_constraintdef(oid) ilike '%role in%s%'
+  loop
+    execute format('alter table public.users drop constraint %I', c);
+  end loop;
+end $$;
+alter table public.users
+  add check (role in ('customer', 'rider', 'restaurant', 'admin'));
+
+-- orders.note: free-text delivery instructions captured at checkout.
+alter table public.orders add column if not exists note text;
+
+-- orders.cancelledBy: restaurants may reject/cancel their own orders.
+do $$
+declare c text;
+begin
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.orders'::regclass and contype = 'c'
+      and pg_get_constraintdef(oid) ilike '%cancelledby in%s%'
+  loop
+    execute format('alter table public.orders drop constraint %I', c);
+  end loop;
+end $$;
+alter table public.orders
+  add check (cancelledBy in ('customer', 'rider', 'restaurant', 'admin', 'system'));
+
+-- restaurants: owner link + admin approval.
+alter table public.restaurants add column if not exists ownerUser uuid;
+create index if not exists restaurants_ownerUser_idx on public.restaurants (ownerUser);
+alter table public.restaurants add column if not exists isApproved boolean not null default true;
+create index if not exists restaurants_status_isapproved_idx on public.restaurants (status, isApproved);
+
+-- ---------------------------------------------------------------------------
 -- Row Level Security: enabled everywhere, zero policies.
 -- The backend uses the service role key (bypasses RLS). The anon key gets
 -- read/write on none of these tables — everything goes through the API.

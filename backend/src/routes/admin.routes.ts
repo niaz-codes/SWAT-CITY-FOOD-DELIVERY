@@ -88,6 +88,7 @@ import {
   updatePromotionSchema,
   userStatusSchema,
 } from '../validations/admin';
+import { ORDER_STATUSES } from '../models';
 import { adminSendNotificationSchema } from '../validations/notification';
 import { z } from 'zod';
 
@@ -180,7 +181,14 @@ router.delete('/categories/:id', validate(idParamSchema, 'params'), adminDeleteC
 // ---------------------------------------------------------------------------
 router.get('/orders', adminListOrders);
 router.get('/orders/:id', validate(idParamSchema, 'params'), adminOrderDetail);
-router.patch('/orders/:id/status', validate(z.object({ status: z.string() })), adminAdvanceOrder);
+// An invalid status must be a client-visible 422, not a confusing 409 caught
+// deep in the state machine.
+router.patch(
+  '/orders/:id/status',
+  validate(idParamSchema, 'params'),
+  validate(z.object({ status: z.enum(ORDER_STATUSES) })),
+  adminAdvanceOrder,
+);
 router.post(
   '/orders/:id/cancel',
   validate(z.object({ reason: z.string().optional() })),

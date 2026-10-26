@@ -1,4 +1,5 @@
 import { defineModel } from '../db/model';
+import { UserModel } from './User';
 
 export const RESTAURANT_STATUSES = ['closed', 'open', 'busy'] as const;
 export type RestaurantStatus = (typeof RESTAURANT_STATUSES)[number];
@@ -48,6 +49,21 @@ export interface Restaurant {
   addressLine?: string | null;
   area?: string | null;
 
+  /**
+   * The signed-in restaurant owner (user with role `restaurant`). One owner
+   * account manages one restaurant. Created path: an owner self-registers and
+   * the restaurant is created with them; admins may also link an owner to an
+   * existing restaurant via `ownerEmail`.
+   */
+  ownerUser?: string | null;
+
+  /**
+   * Admin approval. Restaurants created by admins are approved instantly
+   * (column default); owner-registered restaurants start unapproved and hidden
+   * from the public catalog until an admin approves them.
+   */
+  isApproved: boolean;
+
   location: RestaurantLocation;
 
   hours: RestaurantHours;
@@ -85,6 +101,8 @@ export const RestaurantModel = defineModel<Restaurant>({
     'phone',
     'addressLine',
     'area',
+    'ownerUser',
+    'isApproved',
     'location',
     'hours',
     'deletedAt',
@@ -92,4 +110,7 @@ export const RestaurantModel = defineModel<Restaurant>({
     'updatedAt',
   ],
   arrayCols: ['tags', 'gradient'],
+  refs: {
+    ownerUser: () => UserModel,
+  },
 });

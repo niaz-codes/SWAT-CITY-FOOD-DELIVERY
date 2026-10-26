@@ -120,6 +120,10 @@ export interface Order {
   paymentVerifyAttempts: number;
 
   riderPayout: number;
+
+  /** Free-text delivery instructions captured at checkout. */
+  note?: string | null;
+
   cancelReason?: string | null;
   cancelledBy?: string | null;
 
@@ -157,6 +161,7 @@ export const OrderModel: ModelApi<Order> = defineModel<Order>({
     'paymentFailureReason',
     'paymentVerifyAttempts',
     'riderPayout',
+    'note',
     'cancelReason',
     'cancelledBy',
     'deletedAt',

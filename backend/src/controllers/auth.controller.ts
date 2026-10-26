@@ -5,6 +5,7 @@ import {
   buildAuthResult,
   loginOrRegisterGoogleCustomer,
   publicUser,
+  registerRestaurantOwner,
   registerRiderWithPhoto,
   registerUser,
   resendEmailOtp,
@@ -22,6 +23,12 @@ import type { AuthRequest } from '../middleware/auth';
 
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const result = await registerUser(req.body);
+  sendCreated(res, result);
+});
+
+/** Restaurant owner sign-up: creates the owner account + the restaurant record. */
+export const registerRestaurantCtrl = asyncHandler(async (req: Request, res: Response) => {
+  const result = await registerRestaurantOwner(req.body);
   sendCreated(res, result);
 });
 
