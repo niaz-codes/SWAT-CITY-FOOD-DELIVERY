@@ -1,14 +1,52 @@
 # API Reference (template)
 
-Base URL: `https://api.example.com/v1`
+Base URL: `https://backend-production-73f5.up.railway.app/api`
 Auth: `Authorization: Bearer <token>`
-Response format: `{ "success": true, "data": {...} }` or `{ "success": false, "error": { "code": "", "message": "" } }`
+Response format: `{ "success": true, "data": { ... } }` or `{ "success": false, "message": "...", "requestId": "..." }`
 
 ## Auth
 
-- `POST /auth/send-otp`
-- `POST /auth/verify-otp`
-- `POST /auth/refresh`
+Every email flow is two steps: the first asks for a code, the second confirms
+it. **No session is issued before the code is confirmed**, so a password alone
+is never enough to sign in.
+
+- `POST /auth/login/email` — `{ email, password }` → a challenge token
+- `POST /auth/otp/email/verify` — `{ challengeToken, otp }` → the session
+- `POST /auth/otp/email/resend` — `{ challengeToken }` → a fresh challenge
+- `POST /auth/register` — `{ name, phone, email, password, role }` → a challenge
+- `POST /auth/register/rider` — `multipart/form-data` with the fields
+  `name, phone, email, password, cnic, baseCity, vehicleType, vehiclePlate,
+  experienceYears, latitude, longitude, locationLabel` and the photo in the
+  field `photo` → a challenge. The photo must be a JPG, PNG, WEBP, GIF or HEIC
+  file below 5 MB.
+- `POST /auth/forgot-password`, `POST /auth/reset-password`
+- `POST /auth/google` — `{ idToken }`
+- `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`
+
+A rider account is created **pending**: `isApproved` stays `false` and
+`pendingApproval` stays `true` until an admin approves it.
+
+- `POST /auth/register/restaurant` — `{ name, phone, email, password,
+  restaurantName, … }` → creates a `restaurant`-role account **and** its
+  restaurant record together. The account starts unverified (email code) and
+  the restaurant starts **unapproved** — hidden from the customer app until an
+  admin approves it.
+
+## Restaurant portal (`restaurant` role only)
+
+Every route is scoped through the signed-in owner: none accepts a restaurant
+id, so an owner can only ever touch their own kitchen.
+
+- `GET /restaurant/me` — the owner's restaurant, account and today's stats
+- `PATCH /restaurant/me` — editable profile fields (never platform flags)
+- `POST /restaurant/me/upload` — `multipart/form-data` field `file`
+- `GET /restaurant/menu`, `POST /restaurant/menu`,
+  `PATCH/DELETE /restaurant/menu/{id}`,
+  `POST /restaurant/menu/{id}/upload` — the owner's own dishes
+- `GET /restaurant/orders?status=&page=`, `GET /restaurant/orders/{id}`
+- `POST /restaurant/orders/{id}/advance` — `{ status: confirmed|preparing|ready }`
+- `POST /restaurant/orders/{id}/cancel` — `{ reason }`, only while
+  pending/confirmed/preparing
 
 ## Restaurants
 
@@ -44,5 +82,14 @@ Response format: `{ "success": true, "data": {...} }` or `{ "success": false, "e
 - `PATCH /admin/riders/{id}/vehicle` — admin sets the confirmed plate directly
 - `POST /admin/riders/{id}/vehicle/approve` — apply a rider's pending vehicle change
 - `POST /admin/riders/{id}/vehicle/reject` — decline it; current details stay active
+
+## Admin — restaurants
+
+- `GET /admin/restaurants?search=&status=&approval=pending&page=` — lists every
+  kitchen (with the owner account populated when one is linked)
+- `POST /admin/restaurants` — create (approved instantly)
+- `PATCH /admin/restaurants/{id}` — edit, plus admin-only `isApproved` and
+  `ownerEmail` (links an existing `restaurant`-role account as the owner)
+- `DELETE /admin/restaurants/{id}`, `POST /admin/restaurants/{id}/upload`
 
 > Keep this file in sync with real endpoints.
