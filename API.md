@@ -47,6 +47,12 @@ id, so an owner can only ever touch their own kitchen.
 - `POST /restaurant/orders/{id}/advance` — `{ status: confirmed|preparing|ready }`
 - `POST /restaurant/orders/{id}/cancel` — `{ reason }`, only while
   pending/confirmed/preparing
+- `GET /restaurant/reports?range=today|7d|30d|quarter` — this restaurant's own
+  numbers: `{ summary: { deliveredOrders, grossRevenue, avgOrder, pending,
+  inKitchen, cancelled, rejected }, series: [{ date, orders, revenue }],
+  topDishes: [{ id, name, qty, revenue }], popularIds }`. Revenue counts
+  delivered orders only; dish popularity comes from the item snapshots of
+  delivered orders (`id` is the food item id where the snapshot carries one).
 
 ## Restaurants
 
@@ -59,7 +65,11 @@ id, so an owner can only ever touch their own kitchen.
 - `GET /orders/{id}`
 - `GET /orders?status=`
 - `PATCH /orders/{id}/status` (restaurant/rider/admin)
-- `POST /orders/{id}/cancel`
+- `POST /orders/{id}/cancel` — `{ reason }` (required, min 3 chars); customers
+  can cancel until the rider is assigned
+- `POST /reviews` — `{ targetType: restaurant|food|rider|ride, targetId,
+  rating, comment?, orderId? }`; order-backed reviews are purchase-verified
+  server-side, one review per target per user (409 on duplicates)
 
 ## Payments
 

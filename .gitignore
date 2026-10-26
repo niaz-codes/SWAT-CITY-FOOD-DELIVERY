@@ -55,3 +55,6 @@ google-play-service-account.json
 .expo-shared/
 eas-build.log
 .aider*
+.vercel
+.env*
+*.tsbuildinfo
