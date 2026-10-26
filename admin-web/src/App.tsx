@@ -26,6 +26,7 @@ import PortalLayout from './layouts/PortalLayout'
 import PortalOrders from './pages/portal/PortalOrders'
 import PortalMenu from './pages/portal/PortalMenu'
 import PortalProfile from './pages/portal/PortalProfile'
+import PortalReports from './pages/portal/PortalReports'
 import { homeForRole, isPanelRole } from './stores/authStore'
 
 /** A branded splash while the stored session is being checked. */
@@ -154,6 +155,7 @@ export default function App() {
             <Route index element={<Navigate to="/portal/orders" replace />} />
             <Route path="orders" element={<PortalOrders />} />
             <Route path="menu" element={<PortalMenu />} />
+            <Route path="reports" element={<PortalReports />} />
             <Route path="profile" element={<PortalProfile />} />
           </Route>
           <Route

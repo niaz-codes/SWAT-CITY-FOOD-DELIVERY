@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
+  ChartNoAxesColumn,
   CircleAlert,
   CircleCheckBig,
   LogOut,
@@ -23,6 +24,7 @@ import { Spinner } from '../components/ui/States'
 const PORTAL_NAV: { name: string; to: string; icon: LucideIcon }[] = [
   { name: 'Orders', to: '/portal/orders', icon: ShoppingBag },
   { name: 'Menu', to: '/portal/menu', icon: UtensilsCrossed },
+  { name: 'Reports', to: '/portal/reports', icon: ChartNoAxesColumn },
   { name: 'Profile', to: '/portal/profile', icon: Store },
 ]
 

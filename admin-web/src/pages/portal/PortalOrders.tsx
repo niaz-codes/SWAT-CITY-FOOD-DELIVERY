@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
+  BellRing,
+  BellOff,
   CircleCheckBig,
   ClipboardList,
   MapPin,
@@ -15,6 +17,13 @@ import {
 } from 'lucide-react'
 import { api, apiErrorMessage, apiErrorStatus } from '../../lib/api'
 import { formatCurrency, formatDateTime, humanizeStatus, timeAgo } from '../../lib/format'
+import {
+  announcePendingOrders,
+  freshOrderIds,
+  requestAlertPermission,
+  setSoundAlerts,
+  soundAlertsEnabled,
+} from '../../lib/orderAlert'
 import type { PortalOrder } from '../../lib/portalTypes'
 import { CANCELLABLE_STATUSES, RESTAURANT_ACTIONS, orderStatusLabel, orderStatusTone } from '../../lib/portalTypes'
 import type { PortalContextValue } from '../../lib/portalTypes'
@@ -257,6 +266,9 @@ export default function PortalOrders() {
   const [detail, setDetail] = useState<PortalOrder | null>(null)
   const [cancelling, setCancelling] = useState<PortalOrder | null>(null)
   const [cancelBusy, setCancelBusy] = useState(false)
+  // Kitchen alerts: chime + desktop notification when a new pending order lands.
+  const [alertsOn, setAlertsOn] = useState(soundAlertsEnabled())
+  const [freshIds, setFreshIds] = useState<string[]>([])
 
   const requestId = useRef(0)
 
@@ -267,9 +279,20 @@ export default function PortalOrders() {
       const response = await api.get(`/restaurant/orders?limit=${QUEUE_LIMIT}`)
       if (current !== requestId.current) return
       const body = response.data as { data?: { orders?: PortalOrder[] } }
-      setOrders(body?.data?.orders ?? [])
+      const rows = body?.data?.orders ?? []
+      setOrders(rows)
       setLastUpdated(new Date())
       setError('')
+      // Feeding the alert engine here means the chime fires on the poll that
+      // discovered the order, not on the next one.
+      const pendingIds = rows.filter((order) => order.status === 'pending').map((order) => order._id)
+      const { freshIds: arrived, announced } = announcePendingOrders(pendingIds)
+      if (arrived.length > 0 || announced) setFreshIds(freshOrderIds())
+      if (announced) {
+        toast.success(`${arrived.length} new order${arrived.length === 1 ? '' : 's'} just landed`, {
+          description: 'Confirm it so the kitchen can start cooking.',
+        })
+      }
     } catch (failure) {
       if (current !== requestId.current) return
       setError(apiErrorMessage(failure, 'Could not load your orders.'))
@@ -277,6 +300,23 @@ export default function PortalOrders() {
       if (current === requestId.current) setLoading(false)
     }
   }, [])
+
+  /** Chime + desktop-notification opt in/out — persisted in localStorage. */
+  const toggleAlerts = async () => {
+    const next = !alertsOn
+    setSoundAlerts(next)
+    setAlertsOn(next)
+    if (next) {
+      await requestAlertPermission()
+      toast.success('Kitchen alerts are on', {
+        description: 'A chime plays and a toast pops when a new order arrives.',
+      })
+    } else {
+      toast.success('Kitchen alerts muted', {
+        description: 'The queue still refreshes every 20 s, silently.',
+      })
+    }
+  }
 
   useEffect(() => {
     void load()
@@ -389,6 +429,15 @@ export default function PortalOrders() {
             <Button
               variant="secondary"
               size="sm"
+              icon={alertsOn ? BellRing : BellOff}
+              onClick={() => void toggleAlerts()}
+              title={alertsOn ? 'Mute new-order alerts' : 'Turn on new-order alerts'}
+            >
+              {alertsOn ? 'Alerts on' : 'Muted'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               icon={RefreshCw}
               onClick={() => void load()}
               loading={loading}
@@ -488,6 +537,11 @@ export default function PortalOrders() {
                       <Badge tone={orderStatusTone(order.status)} dot>
                         {orderStatusLabel(order.status)}
                       </Badge>
+                      {freshIds.includes(order._id) && (
+                        <span className="inline-flex items-center rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand">
+                          New
+                        </span>
+                      )}
                       <span className="text-xs text-ink-subtle">{timeAgo(order.createdAt)}</span>
                     </div>
                     <p className="mt-1.5 truncate text-sm text-ink-muted">
