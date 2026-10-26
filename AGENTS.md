@@ -62,3 +62,4 @@ Ask the developer (Niaz) instead of guessing about business rules, pricing, or p
 - `docs/TESTING.md`
 - `docs/UI_UX_GUIDELINES.md`
 - `docs/USER_ROLES.md`
+- `docs/WHATSAPP_ORDERING.md`
