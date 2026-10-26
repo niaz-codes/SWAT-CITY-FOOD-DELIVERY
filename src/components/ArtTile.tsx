@@ -15,7 +15,16 @@ type Props = {
   subtle?: boolean;
 };
 
-export function ArtTile({ gradient, emoji, label, size = 84, rounded, style, emojiSize, subtle }: Props) {
+export function ArtTile({
+  gradient,
+  emoji,
+  label,
+  size = 84,
+  rounded,
+  style,
+  emojiSize,
+  subtle,
+}: Props) {
   return (
     <View
       style={[
@@ -35,7 +44,12 @@ export function ArtTile({ gradient, emoji, label, size = 84, rounded, style, emo
         end={{ x: 1, y: 1 }}
         style={styles.fill}
       >
-        <View style={[styles.glow, { width: size * 0.9, height: size * 0.9, borderRadius: size * 0.45 }]} />
+        <View
+          style={[
+            styles.glow,
+            { width: size * 0.9, height: size * 0.9, borderRadius: size * 0.45 },
+          ]}
+        />
         <AppText
           style={{
             fontSize: emojiSize ?? size * 0.44,
@@ -57,7 +71,15 @@ export function ArtTile({ gradient, emoji, label, size = 84, rounded, style, emo
 }
 
 const styles = StyleSheet.create({
-  wrap: { alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.16, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 4 },
+  wrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
+  },
   fill: { flex: 1, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   glow: { position: 'absolute', backgroundColor: 'rgba(255,255,255,0.16)', top: -8, right: -14 },
   label: { marginTop: spacing.xs, paddingHorizontal: spacing.xs },

@@ -54,7 +54,13 @@ export function ConfirmationDialog({
   }));
 
   return (
-    <Modal transparent visible={visible} animationType="fade" statusBarTranslucent onRequestClose={onCancel}>
+    <Modal
+      transparent
+      visible={visible}
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={onCancel}
+    >
       <Animated.View style={[styles.backdrop, { backgroundColor: colors.overlay }, anim]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onCancel} />
         <Animated.View

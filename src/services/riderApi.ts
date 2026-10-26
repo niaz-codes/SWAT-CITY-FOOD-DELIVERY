@@ -19,6 +19,7 @@ export type RiderDocument = {
   type: string;
   url: string;
   status: string;
+  reviewNote?: string | null;
   createdAt: string;
 };
 

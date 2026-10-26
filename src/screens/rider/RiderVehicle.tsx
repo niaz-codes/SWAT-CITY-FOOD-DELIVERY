@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -41,20 +41,25 @@ export function RiderVehicleScreen({ navigation }: Props) {
   const { error, success, info } = useToast();
 
   const liveType = (profile?.vehicleType as VehicleKey) ?? 'bike';
-  const [type, setType] = useState<VehicleKey>(liveType);
-  const [plate, setPlate] = useState(profile?.vehiclePlate ?? '');
-  const [brand, setBrand] = useState(profile?.vehicleBrand ?? '');
-  const [submitting, setSubmitting] = useState(false);
-  const [touched, setTouched] = useState(false);
+  const livePlate = profile?.vehiclePlate ?? '';
+  const liveBrand = profile?.vehicleBrand ?? '';
 
-  // Keep local fields in step with a profile refresh (e.g. after an admin
-  // decision), but never clobber what the rider is currently typing.
-  useEffect(() => {
-    if (touched) return;
-    setType((profile?.vehicleType as VehicleKey) ?? 'bike');
-    setPlate(profile?.vehiclePlate ?? '');
-    setBrand(profile?.vehicleBrand ?? '');
-  }, [profile?.vehicleType, profile?.vehiclePlate, profile?.vehicleBrand, touched]);
+  /**
+   * The fields are only held locally once the rider actually edits them.
+   * Before that they simply follow the profile, so an admin decision (or the
+   * refresh that follows a submission) shows up without copying it into
+   * separate state - and the rider's own typing is never clobbered.
+   */
+  const [draft, setDraft] = useState<{
+    type: VehicleKey;
+    plate: string;
+    brand: string;
+  } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const type = draft?.type ?? liveType;
+  const plate = draft?.plate ?? livePlate;
+  const brand = draft?.brand ?? liveBrand;
 
   const pending = profile?.pendingVehicle;
   const hasPending = Boolean(pending?.requestedAt);
@@ -92,7 +97,8 @@ export function RiderVehicleScreen({ navigation }: Props) {
       } else {
         success('That matches your approved details — nothing to review.');
       }
-      setTouched(false);
+      // Drop the draft so the fields fall back to the (refreshed) profile.
+      setDraft(null);
       await refreshProfile();
     } catch (err) {
       haptics.warning();
@@ -174,8 +180,7 @@ export function RiderVehicleScreen({ navigation }: Props) {
                 selected={type === v.key}
                 onPress={() => {
                   haptics.light();
-                  setTouched(true);
-                  setType(v.key);
+                  setDraft({ type: v.key, plate, brand });
                 }}
               />
             ))}
@@ -189,8 +194,7 @@ export function RiderVehicleScreen({ navigation }: Props) {
             placeholder="e.g. SWAT-1234"
             value={plate}
             onChangeText={(t) => {
-              setTouched(true);
-              setPlate(t.toUpperCase().slice(0, 20));
+              setDraft({ type, plate: t.toUpperCase().slice(0, 20), brand });
             }}
             autoCapitalize="characters"
             error={
@@ -205,8 +209,7 @@ export function RiderVehicleScreen({ navigation }: Props) {
             placeholder="e.g. Honda, Suzuki"
             value={brand}
             onChangeText={(t) => {
-              setTouched(true);
-              setBrand(t.slice(0, 60));
+              setDraft({ type, plate, brand: t.slice(0, 60) });
             }}
             autoCapitalize="words"
           />

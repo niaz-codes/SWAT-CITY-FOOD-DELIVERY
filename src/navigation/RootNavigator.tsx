@@ -12,6 +12,7 @@ import { ResetPasswordScreen } from '../screens/auth/ResetPassword';
 import { ForgotPasswordScreen } from '../screens/auth/ForgotPassword';
 
 import { useAuth } from '../state/AuthContext';
+import type { Role } from '../types/domain';
 import { authApi } from '../services/api';
 import {
   ensurePushTokenRegistered,
@@ -44,24 +45,16 @@ import { RiderMainShellScreen } from '../screens/rider/RiderMainShell';
 import { RiderRegistrationScreen } from '../screens/rider/RiderRegistration';
 import { RiderVerificationScreen } from '../screens/rider/RiderVerification';
 import { RiderActiveDeliveryScreen } from '../screens/rider/RiderActiveDelivery';
+import { RiderFoodDeliveryScreen } from '../screens/rider/RiderFoodDelivery';
 import { RiderNavigationScreen } from '../screens/rider/RiderNavigation';
 import { RiderDocumentsScreen } from '../screens/rider/RiderDocuments';
 import { RiderBaseLocationScreen } from '../screens/rider/RiderBaseLocation';
 import { RiderVehicleScreen } from '../screens/rider/RiderVehicle';
 
-import { withAdminGuard } from './AdminGuard';
-import { AdminMainScreen } from '../screens/admin/AdminMain';
-import { AdminUsers } from '../screens/admin/AdminUsers';
-import { AdminRiders } from '../screens/admin/AdminRiders';
-import { AdminRestaurants } from '../screens/admin/AdminRestaurants';
-import { AdminMenu } from '../screens/admin/AdminMenu';
-import { AdminRides } from '../screens/admin/AdminRides';
-import { AdminPayments } from '../screens/admin/AdminPayments';
-import { AdminWithdrawals } from '../screens/admin/AdminWithdrawals';
-import { AdminWallet } from '../screens/admin/AdminWallet';
-import { AdminPromotions } from '../screens/admin/AdminPromotions';
-import { AdminNotifications } from '../screens/admin/AdminNotifications';
-import { AdminSupport } from '../screens/admin/AdminSupport';
+// The admin panel lives in its own web app (admin-web). Admin screens, guards
+// and admin API services are deliberately absent from this mobile bundle.
+
+import { PartnerPortalScreen } from '../screens/PartnerPortal';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -73,20 +66,47 @@ export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 /**
  * Routes a push payload to the screen that owns it. Notification `kind` strings
- * come from the backend (backend/src/services/notification.service.ts).
+ * come from the backend (backend/src/services/notification.service.ts) and are
+ * now the fine-grained `event` value, so every order event - not just the
+ * `order_*` ones - must resolve to order tracking.
  */
-function handleNotificationPayload(payload: AppNotificationPayload): void {
+function handleNotificationPayload(payload: AppNotificationPayload, role?: Role): void {
   if (!navigationRef.isReady()) return;
 
   const target = payload.targetId;
   const kind = payload.kind ?? '';
 
-  if (target && (kind.startsWith('order_') || kind === 'order')) {
+  const isOrderEvent =
+    kind === 'order' ||
+    kind.startsWith('order_') ||
+    // Rider-side order events (rider_assigned / rider_picked_up / ...) still
+    // point at an order.
+    kind.startsWith('rider_');
+  const isRideEvent = kind === 'ride' || kind.startsWith('ride_');
+
+  // A rider's pushes are dispatch messages: the rider shell owns the live feed
+  // and the active delivery, and the customer OrderTracking screen would 403.
+  if (role === 'rider') {
+    navigationRef.navigate(target || isOrderEvent || isRideEvent ? 'RiderMain' : 'Notifications');
+    return;
+  }
+
+  // Admins manage the platform on the web app only (no admin screens ship in
+  // this APK), so their pushes land on the notification list like any other
+  // unread activity.
+  if (role === 'admin') {
+    navigationRef.navigate('Notifications');
+    return;
+  }
+
+  if (target && isOrderEvent) {
     navigationRef.navigate('OrderTracking', { orderId: target });
     return;
   }
-  if (target && kind.startsWith('ride_')) {
-    navigationRef.navigate('Notifications');
+  if (target && isRideEvent) {
+    // For customers the ride id is all RiderTracking needs — it fetches the
+    // live ride (and its cancellation) itself. Riders were handled above.
+    navigationRef.navigate('RiderTracking', { rideId: target });
     return;
   }
   navigationRef.navigate('Notifications');
@@ -103,11 +123,14 @@ function usePushAndDeepLinks(): void {
 
   // Cold start: a tap that launched the app.
   useEffect(() => {
-    void getInitialNotification(handleNotificationPayload);
-  }, []);
+    void getInitialNotification((payload) => handleNotificationPayload(payload, user?.role));
+  }, [user?.role]);
 
   // Background tap.
-  useEffect(() => onNotificationOpenedApp(handleNotificationPayload), []);
+  useEffect(
+    () => onNotificationOpenedApp((payload) => handleNotificationPayload(payload, user?.role)),
+    [user?.role],
+  );
 
   // Foreground delivery. The Android tray channel is created on launch, and
   // expo-notifications shows the banner itself via the handler in
@@ -128,7 +151,9 @@ function usePushAndDeepLinks(): void {
   // Re-register on foreground: catches tokens rotated while backgrounded.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
-      if (appState.current.match(/inactive|background/) && next === 'active' && user) {
+      // appState.current is nullable (AppState.currentState can be null before
+      // the first change event), so the match is guarded rather than assumed.
+      if (appState.current?.match(/inactive|background/) && next === 'active' && user) {
         void ensurePushTokenRegistered((token) => authApi.registerDeviceToken(token));
       }
       appState.current = next;
@@ -140,10 +165,10 @@ function usePushAndDeepLinks(): void {
 /**
  * Sends the user back to Login when the session ends.
  *
- * `withAdminGuard` only wraps the admin screens, so on the customer and rider
- * stacks clearing the user left the UI stranded on whatever screen the logout
- * was triggered from - Profile looked signed in even though the session was
- * gone. Watching the session here covers every role in one place.
+ * The tab shells only redirect on explicit logout, so when the session was
+ * cleared (e.g. a 401 on an expired token) the UI would stay stranded on
+ * whatever screen the session was dropped from. Watching the session here
+ * covers every role in one place.
  *
  * `navigationRef` is used rather than `useNavigation` because this hook runs
  * above the Navigator, and `reset` (not `navigate`) is required to drop the
@@ -198,11 +223,10 @@ export function RootNavigator() {
         options={{ animation: 'fade' }}
       />
       <Stack.Screen
-        name="AdminMain"
-        component={withAdminGuard(AdminMainScreen)}
+        name="PartnerPortal"
+        component={PartnerPortalScreen}
         options={{ animation: 'fade' }}
       />
-
       <Stack.Screen name="FoodSearch" component={FoodSearchScreen} />
       <Stack.Screen name="Restaurant" component={RestaurantScreen} />
       <Stack.Screen
@@ -245,22 +269,15 @@ export function RootNavigator() {
         component={RiderActiveDeliveryScreen}
         options={{ gestureEnabled: false }}
       />
+      <Stack.Screen
+        name="RiderFoodDelivery"
+        component={RiderFoodDeliveryScreen}
+        options={{ gestureEnabled: false }}
+      />
       <Stack.Screen name="RiderNavigation" component={RiderNavigationScreen} />
       <Stack.Screen name="RiderDocuments" component={RiderDocumentsScreen} />
       <Stack.Screen name="RiderBaseLocation" component={RiderBaseLocationScreen} />
       <Stack.Screen name="RiderVehicle" component={RiderVehicleScreen} />
-
-      <Stack.Screen name="AdminUsers" component={withAdminGuard(AdminUsers)} />
-      <Stack.Screen name="AdminRiders" component={withAdminGuard(AdminRiders)} />
-      <Stack.Screen name="AdminRestaurants" component={withAdminGuard(AdminRestaurants)} />
-      <Stack.Screen name="AdminMenu" component={withAdminGuard(AdminMenu)} />
-      <Stack.Screen name="AdminRides" component={withAdminGuard(AdminRides)} />
-      <Stack.Screen name="AdminPayments" component={withAdminGuard(AdminPayments)} />
-      <Stack.Screen name="AdminWithdrawals" component={withAdminGuard(AdminWithdrawals)} />
-      <Stack.Screen name="AdminWallet" component={withAdminGuard(AdminWallet)} />
-      <Stack.Screen name="AdminPromotions" component={withAdminGuard(AdminPromotions)} />
-      <Stack.Screen name="AdminNotifications" component={withAdminGuard(AdminNotifications)} />
-      <Stack.Screen name="AdminSupport" component={withAdminGuard(AdminSupport)} />
     </Stack.Navigator>
   );
 }

@@ -12,13 +12,19 @@ import { RestaurantCard } from '../../components/RestaurantCard';
 import { FoodCard } from '../../components/FoodCard';
 import { Chip } from '../../components/Chip';
 import { SectionHeader } from '../../components/SectionHeader';
-import { SkeletonBanner, SkeletonRestaurantList, SkeletonFoodGrid } from '../../components/LoadingSkeleton';
+import {
+  SkeletonBanner,
+  SkeletonRestaurantList,
+  SkeletonFoodGrid,
+} from '../../components/LoadingSkeleton';
 import { ErrorState, EmptyState } from '../../components/EmptyState';
-import { foodApi, CATEGORIES } from '../../services/api';
+import { foodApi } from '../../services/api';
 import { useAsyncData } from '../../hooks/useAsyncData';
 import { useThemeColors } from '../../theme';
 import { radius, spacing } from '../../theme/spacing';
 import { useCart } from '../../state/CartContext';
+import { useAuth } from '../../state/AuthContext';
+import { useUnreadNotifications } from '../../hooks/useUnreadNotifications';
 import { formatCurrency } from '../../utils/format';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -41,6 +47,19 @@ export function FoodHomeScreen() {
     return all.filter((r) => r.category === category);
   }, [restaurants.data, category]);
 
+  /**
+   * Returns the header as an element, and `ListHeaderComponent` below receives
+   * that element rather than this function.
+   *
+   * Passing the function made VirtualizedList call
+   * `React.createElement(renderSections)`, and because `renderSections` is
+   * re-created on every render its identity changed each time — so React saw a
+   * different component type and remounted the entire header subtree (banner,
+   * carousels, category row, and the nested horizontal FlatList) on every single
+   * render. That showed up as flicker and could drop focus while typing a
+   * search. Handing over the element lets React reconcile by type and key
+   * instead, matching how the other lists in the app pass their headers.
+   */
   const renderSections = () =>
     restaurants.loading && restaurants.data == null ? (
       <>
@@ -55,16 +74,25 @@ export function FoodHomeScreen() {
     ) : (
       <>
         <Banner onPress={() => navigation.navigate('FoodSearch')} />
-        <SectionHeader title="Popular right now" subtitle="Loved across Mingora" actionLabel="See all" />
+        <SectionHeader
+          title="Popular right now"
+          subtitle="Loved across Mingora"
+          actionLabel="See all"
+        />
         <View style={styles.popularWrap}>
-          {popular.data && popular.data.slice(0, 4).map((item) => (
-            <FoodCard
-              key={item.id}
-              item={item}
-              variant="grid"
-              onPress={() => navigation.navigate('FoodDetails', { item, restaurantName: 'Top picks' })}
-            />
-          ))}
+          {popular.data &&
+            popular.data
+              .slice(0, 4)
+              .map((item) => (
+                <FoodCard
+                  key={item.id}
+                  item={item}
+                  variant="grid"
+                  onPress={() =>
+                    navigation.navigate('FoodDetails', { item, restaurantName: 'Top picks' })
+                  }
+                />
+              ))}
         </View>
         <SectionHeader title="Featured restaurants" actionLabel="Explore" onAction={() => {}} />
         <FlatList
@@ -74,16 +102,30 @@ export function FoodHomeScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.carousel}
           renderItem={({ item }) => (
-            <RestaurantCard restaurant={item} variant="featured" onPress={() => navigation.navigate('Restaurant', { restaurantId: item.id })} />
+            <RestaurantCard
+              restaurant={item}
+              variant="featured"
+              onPress={() => navigation.navigate('Restaurant', { restaurantId: item.id })}
+            />
           )}
         />
         <CategoryRow active={category} onChange={setCategory} />
         <SectionHeader title={category === 'All' ? 'All restaurants' : category} />
         {filtered.length === 0 ? (
-          <EmptyState icon="restaurant-outline" title="Nothing in this category yet" compact message="Try another category from the row above." />
+          <EmptyState
+            icon="restaurant-outline"
+            title="Nothing in this category yet"
+            compact
+            message="Try another category from the row above."
+          />
         ) : (
           filtered.map((r) => (
-            <RestaurantCard key={r.id} restaurant={r} variant="row" onPress={() => navigation.navigate('Restaurant', { restaurantId: r.id })} />
+            <RestaurantCard
+              key={r.id}
+              restaurant={r}
+              variant="row"
+              onPress={() => navigation.navigate('Restaurant', { restaurantId: r.id })}
+            />
           ))
         )}
       </>
@@ -93,12 +135,14 @@ export function FoodHomeScreen() {
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
       <FlatList
         data={[]}
-        ListHeaderComponent={renderSections}
+        ListHeaderComponent={renderSections()}
         renderItem={() => null}
         keyExtractor={() => 'h'}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 120 }]}
-        refreshControl={<RefreshControl onRefresh={restaurants.onRefresh} refreshing={restaurants.refreshing} />}
+        refreshControl={
+          <RefreshControl onRefresh={restaurants.onRefresh} refreshing={restaurants.refreshing} />
+        }
         ListHeaderComponentStyle={styles.headerWrap}
       />
       <View
@@ -110,35 +154,58 @@ export function FoodHomeScreen() {
         <Header navigation={navigation} />
         <SearchPill onPress={() => navigation.navigate('FoodSearch')} />
       </View>
-      {count > 0 && <CartBar count={count} subtotal={subtotal} onPress={() => navigation.navigate('Cart')} />}
+      {count > 0 && (
+        <CartBar count={count} subtotal={subtotal} onPress={() => navigation.navigate('Cart')} />
+      )}
     </View>
   );
 }
 
 function Header({ navigation }: { navigation: Nav }) {
   const { colors } = useThemeColors();
+  const { user } = useAuth();
+  const unread = useUnreadNotifications();
   return (
     <View style={styles.headerRow}>
       <View style={styles.identity}>
         <AppText variant="caption" color={colors.textMuted}>
           Assalam o Alaikum
         </AppText>
-        <AppText variant="h3" weight="extraBold" color={colors.textPrimary}>
-          Ahmad Khan
+        <AppText variant="h3" weight="extraBold" color={colors.textPrimary} numberOfLines={1}>
+          {user?.name ?? 'Swat User'}
         </AppText>
       </View>
       <View style={styles.iconRow}>
         <HeaderIcon name="heart-outline" onPress={() => navigation.navigate('Favorites')} />
-        <HeaderIcon name="notifications-outline" onPress={() => navigation.navigate('Notifications')} badge={2} />
+        <HeaderIcon
+          name="notifications-outline"
+          onPress={() => navigation.navigate('Notifications')}
+          badge={unread}
+        />
       </View>
     </View>
   );
 }
 
-function HeaderIcon({ name, onPress, badge }: { name: keyof typeof Ionicons.glyphMap; onPress: () => void; badge?: number }) {
+function HeaderIcon({
+  name,
+  onPress,
+  badge,
+}: {
+  name: keyof typeof Ionicons.glyphMap;
+  onPress: () => void;
+  badge?: number;
+}) {
   const { colors } = useThemeColors();
   return (
-    <Pressable onPress={onPress} hitSlop={6} style={[styles.headerIcon, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      style={[
+        styles.headerIcon,
+        { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+      ]}
+    >
       <Ionicons name={name} size={21} color={colors.textPrimary} />
       {badge != null && badge > 0 && (
         <View style={[styles.headerBadge, { backgroundColor: colors.danger }]}>
@@ -154,7 +221,13 @@ function HeaderIcon({ name, onPress, badge }: { name: keyof typeof Ionicons.glyp
 function SearchPill({ onPress }: { onPress: () => void }) {
   const { colors } = useThemeColors();
   return (
-    <Pressable onPress={onPress} style={[styles.searchPill, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+    <Pressable
+      onPress={onPress}
+      style={[
+        styles.searchPill,
+        { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+      ]}
+    >
       <Ionicons name="search" size={18} color={colors.textMuted} />
       <AppText variant="body" color={colors.textMuted} style={styles.searchText}>
         Search for dishes, kitchens…
@@ -169,10 +242,14 @@ function SearchPill({ onPress }: { onPress: () => void }) {
 }
 
 function Banner({ onPress }: { onPress: () => void }) {
-  const { colors } = useThemeColors();
   return (
     <Pressable onPress={onPress}>
-      <LinearGradient colors={['#0E9488', '#0B6B63', '#0E3F3A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.banner}>
+      <LinearGradient
+        colors={['#0E9488', '#0B6B63', '#0E3F3A']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.banner}
+      >
         <View style={[styles.bannerCircle, styles.bannerCircleA]} />
         <View style={[styles.bannerCircle, styles.bannerCircleB]} />
         <View style={styles.bannerBody}>
@@ -183,7 +260,11 @@ function Banner({ onPress }: { onPress: () => void }) {
             30% OFF
           </AppText>
           <AppText variant="small" color="rgba(255,255,255,0.9)" numberOfLines={1}>
-            Code <AppText variant="smallMedium" weight="bold" color="#FFFFFF">SWAT30</AppText> · Min Rs 400 order
+            Code{' '}
+            <AppText variant="smallMedium" weight="bold" color="#FFFFFF">
+              SWAT30
+            </AppText>{' '}
+            · Min Rs 400 order
           </AppText>
         </View>
         <View style={styles.bannerArt}>
@@ -200,16 +281,27 @@ function Banner({ onPress }: { onPress: () => void }) {
 }
 
 function CategoryRow({ active, onChange }: { active: string; onChange: (c: string) => void }) {
+  const { data: catsData } = useAsyncData(() => foodApi.getCategories(), []);
+  const cats = catsData ?? ['All'];
+  const items = ['All', ...cats.filter((c) => c !== 'All')];
   return (
     <View style={styles.catRow}>
-      {CATEGORIES.map((c) => (
+      {items.map((c) => (
         <Chip key={c} label={c} selected={active === c} onPress={() => onChange(c)} />
       ))}
     </View>
   );
 }
 
-function CartBar({ count, subtotal, onPress }: { count: number; subtotal: number; onPress: () => void }) {
+function CartBar({
+  count,
+  subtotal,
+  onPress,
+}: {
+  count: number;
+  subtotal: number;
+  onPress: () => void;
+}) {
   const { colors } = useThemeColors();
   return (
     <Animated.View entering={FadeInUp.duration(320)} style={[styles.cartBar, { paddingBottom: 8 }]}>
@@ -299,8 +391,20 @@ const styles = StyleSheet.create({
     minHeight: 132,
   },
   bannerCircle: { position: 'absolute', borderRadius: 999 },
-  bannerCircleA: { width: 180, height: 180, top: -70, right: -40, backgroundColor: 'rgba(255,255,255,0.08)' },
-  bannerCircleB: { width: 90, height: 90, bottom: -40, left: 120, backgroundColor: 'rgba(255,255,255,0.07)' },
+  bannerCircleA: {
+    width: 180,
+    height: 180,
+    top: -70,
+    right: -40,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  bannerCircleB: {
+    width: 90,
+    height: 90,
+    bottom: -40,
+    left: 120,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+  },
   bannerBody: { flex: 1, gap: 2 },
   bannerArt: {
     width: 72,

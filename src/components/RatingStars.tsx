@@ -34,7 +34,12 @@ export function RatingStars({ rating, size = 14, showValue = true, reviews }: Pr
         })}
       </View>
       {showValue && (
-        <AppText variant="smallMedium" weight="bold" color={colors.textPrimary} style={styles.value}>
+        <AppText
+          variant="smallMedium"
+          weight="bold"
+          color={colors.textPrimary}
+          style={styles.value}
+        >
           {rating.toFixed(1)}
         </AppText>
       )}

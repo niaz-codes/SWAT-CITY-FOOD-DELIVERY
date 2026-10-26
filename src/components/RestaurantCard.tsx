@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { AppText } from './AppText';
 import { ArtTile } from './ArtTile';
@@ -9,6 +9,7 @@ import { useThemeColors } from '../theme';
 import { radius, spacing } from '../theme/spacing';
 import { Restaurant } from '../types/domain';
 import { haptics } from '../hooks/useHaptics';
+import { usePressScale } from '../hooks/usePressScale';
 
 type Variant = 'featured' | 'row';
 
@@ -20,11 +21,16 @@ type Props = {
   isFavorite?: boolean;
 };
 
-export function RestaurantCard({ restaurant, variant = 'row', onPress, onToggleFavorite, isFavorite }: Props) {
+export function RestaurantCard({
+  restaurant,
+  variant = 'row',
+  onPress,
+  onToggleFavorite,
+  isFavorite,
+}: Props) {
   const { colors } = useThemeColors();
-  const scale = useSharedValue(1);
-
-  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  const featured = usePressScale(0.97, 18, 280);
+  const row = usePressScale(0.98, 18, 300);
 
   const handlePress = () => {
     haptics.light();
@@ -33,16 +39,15 @@ export function RestaurantCard({ restaurant, variant = 'row', onPress, onToggleF
 
   if (variant === 'featured') {
     return (
-      <Animated.View style={[styles.featWrap, animStyle]}>
+      <Animated.View style={[styles.featWrap, featured.animStyle]}>
         <Pressable
-          onPressIn={() => {
-            scale.value = withSpring(0.97, { damping: 18, stiffness: 280 });
-          }}
-          onPressOut={() => {
-            scale.value = withSpring(1, { damping: 18, stiffness: 280 });
-          }}
+          onPressIn={featured.pressIn}
+          onPressOut={featured.pressOut}
           onPress={handlePress}
-          style={[styles.featCard, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
+          style={[
+            styles.featCard,
+            { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+          ]}
         >
           <View style={styles.featMain}>
             <ArtTile gradient={restaurant.gradient} emoji={restaurant.emoji} size={64} />
@@ -78,25 +83,22 @@ export function RestaurantCard({ restaurant, variant = 'row', onPress, onToggleF
               </AppText>
             </View>
           )}
-          {onToggleFavorite && (
-            <FavoriteFab isFavorite={!!isFavorite} onPress={onToggleFavorite} />
-          )}
+          {onToggleFavorite && <FavoriteFab isFavorite={!!isFavorite} onPress={onToggleFavorite} />}
         </Pressable>
       </Animated.View>
     );
   }
 
   return (
-    <Animated.View style={animStyle}>
+    <Animated.View style={row.animStyle}>
       <Pressable
-        onPressIn={() => {
-          scale.value = withSpring(0.98, { damping: 18, stiffness: 300 });
-        }}
-        onPressOut={() => {
-          scale.value = withSpring(1, { damping: 18, stiffness: 300 });
-        }}
+        onPressIn={row.pressIn}
+        onPressOut={row.pressOut}
         onPress={handlePress}
-        style={[styles.rowCard, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
+        style={[
+          styles.rowCard,
+          { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+        ]}
       >
         <ArtTile gradient={restaurant.gradient} emoji={restaurant.emoji} size={76} />
         <View style={styles.rowInfo}>
@@ -141,7 +143,15 @@ export function RestaurantCard({ restaurant, variant = 'row', onPress, onToggleF
   );
 }
 
-function FavoriteFab({ isFavorite, onPress, small }: { isFavorite: boolean; onPress: () => void; small?: boolean }) {
+function FavoriteFab({
+  isFavorite,
+  onPress,
+  small,
+}: {
+  isFavorite: boolean;
+  onPress: () => void;
+  small?: boolean;
+}) {
   const { colors } = useThemeColors();
   return (
     <Animated.View style={{ position: 'absolute', top: spacing.sm, right: spacing.sm }}>
@@ -164,7 +174,7 @@ function FavoriteFab({ isFavorite, onPress, small }: { isFavorite: boolean; onPr
         <Ionicons
           name={isFavorite ? 'heart' : 'heart-outline'}
           size={small ? 17 : 19}
-          color={isFavorite ? '#E5484D' : '#7C918E'}
+          color={isFavorite ? colors.danger : colors.textMuted}
         />
       </Pressable>
     </Animated.View>
@@ -212,5 +222,13 @@ const styles = StyleSheet.create({
   rowInfo: { flex: 1, justifyContent: 'center', gap: 2, paddingRight: spacing.md },
   rowMeta: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   promoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: 2 },
-  fav: { alignItems: 'center', justifyContent: 'center', elevation: 4, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } },
+  fav: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+  },
 });

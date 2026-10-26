@@ -1,12 +1,12 @@
 import React from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import { Pressable, StyleSheet, View, TextInput } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
-import { TextInput } from 'react-native';
 import { AppText } from './AppText';
 import { useThemeColors } from '../theme';
 import { fonts } from '../theme/typography';
 import { radius, sizes, spacing } from '../theme/spacing';
+import { usePressScale } from '../hooks/usePressScale';
 
 type Props = {
   value: string;
@@ -18,25 +18,27 @@ type Props = {
   leftIcon?: keyof typeof Ionicons.glyphMap;
 };
 
-export function SearchBar({ value, onChangeText, placeholder = 'Search', autoFocus, onFocus, onBlur, leftIcon = 'search' }: Props) {
+export function SearchBar({
+  value,
+  onChangeText,
+  placeholder = 'Search',
+  autoFocus,
+  onFocus,
+  onBlur,
+  leftIcon = 'search',
+}: Props) {
   const { colors } = useThemeColors();
-  const scale = useSharedValue(1);
-  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  const { animStyle, pressIn, pressOut } = usePressScale(0.985, 20, 300);
 
   return (
     <Animated.View style={animStyle}>
       <Pressable
         onPressIn={() => {
-          scale.value = withSpring(0.985, { damping: 20, stiffness: 300 });
+          pressIn();
           onFocus?.();
         }}
-        onPressOut={() => {
-          scale.value = withSpring(1, { damping: 20, stiffness: 300 });
-        }}
-        style={[
-          styles.bar,
-          { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
-        ]}
+        onPressOut={pressOut}
+        style={[styles.bar, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
       >
         <Ionicons name={leftIcon} size={20} color={colors.textMuted} />
         <TextInput
@@ -64,7 +66,9 @@ export function SearchBar({ value, onChangeText, placeholder = 'Search', autoFoc
 export function SearchBarLabel({ placeholder }: { placeholder: string }) {
   const { colors } = useThemeColors();
   return (
-    <View style={[styles.bar, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+    <View
+      style={[styles.bar, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
+    >
       <Ionicons name="search" size={20} color={colors.textMuted} />
       <AppText variant="body" color={colors.textMuted}>
         {placeholder}
@@ -84,5 +88,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   input: { flex: 1, fontSize: 15, paddingVertical: 0 },
-  clear: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  clear: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

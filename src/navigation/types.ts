@@ -1,4 +1,4 @@
-import type { RideFlow, RideType, MenuItem } from '../types/domain';
+import type { RideType, MenuItem } from '../types/domain';
 
 export type RootStackParamList = {
   Splash: undefined;
@@ -46,14 +46,25 @@ export type RootStackParamList = {
   OrderTracking: { orderId: string };
 
   LocationPicker: { mode: 'pickup' | 'dropoff' };
+  /**
+   * "Finding your rider" interstitial, reached right after a real booking.
+   * `rideId` is polled until a rider claims the ride (or the search is
+   * cancelled); the display fields are only for the summary card.
+   */
   RideSearching: {
+    rideId: string;
     pickup: string;
     dropoff: string;
     distanceKm: number;
     rideType: RideType;
     fare: number;
   };
-  RiderTracking: { ride: RideFlow };
+  /**
+   * The live ride-tracking screen. The full ride object is fetched by id on
+   * mount (rides change under you: assignment, status, completion), so only the
+   * id travels through navigation.
+   */
+  RiderTracking: { rideId: string };
 
   Activities: undefined;
   Favorites: undefined;
@@ -68,26 +79,26 @@ export type RootStackParamList = {
    */
   Legal: { doc?: 'privacy' | 'terms' } | undefined;
 
-  RiderActiveDelivery: { primaryRequest: boolean };
-  RiderNavigation: undefined;
+  /** The ride the rider accepted; everything else is fetched by id. */
+  RiderActiveDelivery: { rideId: string };
+
+  /** A food order the rider accepted; data comes from GET /rider/jobs. */
+  RiderFoodDelivery: { orderId: string };
+
+  /** Turn-by-turn hand-off to the phone's real navigation app. */
+  RiderNavigation: { destination: { lat?: number; lng?: number; label?: string } };
   RiderDocuments: undefined;
   /** Rider sets the base location pin they start their shift from. */
   RiderBaseLocation: undefined;
   /** Rider proposes a vehicle type / registration change (admin-approved). */
   RiderVehicle: undefined;
 
-  AdminMain: undefined;
-  AdminUsers: undefined;
-  AdminRiders: undefined;
-  AdminRestaurants: undefined;
-  AdminMenu: undefined;
-  AdminRides: undefined;
-  AdminPayments: undefined;
-  AdminWithdrawals: undefined;
-  AdminWallet: undefined;
-  AdminPromotions: undefined;
-  AdminNotifications: undefined;
-  AdminSupport: undefined;
+  /**
+   * Landing screen for restaurant-owner accounts on mobile. The owner
+   * dashboard itself is web-based (same keep-admin-off-the-APK policy), so this
+   * screen explains that and signs the account out cleanly.
+   */
+  PartnerPortal: undefined;
 };
 
 declare global {

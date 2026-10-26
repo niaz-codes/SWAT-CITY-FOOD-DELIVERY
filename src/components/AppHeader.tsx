@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, View, StyleProp, ViewStyle } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,6 +8,7 @@ import { AppText } from './AppText';
 import { useThemeColors } from '../theme';
 import { sizes, spacing } from '../theme/spacing';
 import { haptics } from '../hooks/useHaptics';
+import { usePressScale } from '../hooks/usePressScale';
 
 type Props = {
   title?: string;
@@ -48,15 +49,17 @@ export function AppHeader({
     else if (navigation.canGoBack()) navigation.goBack();
   };
 
-  const showLeft = !hideBack || left || (titleAlign === 'left' && title);
-
   return (
     <View
       style={[
         styles.wrapper,
         {
           paddingTop: insets.top,
-          backgroundColor: transparent ? 'transparent' : elevated ? colors.surface : colors.background,
+          backgroundColor: transparent
+            ? 'transparent'
+            : elevated
+              ? colors.surface
+              : colors.background,
           borderBottomWidth: elevated ? StyleSheet.hairlineWidth : 0,
           borderBottomColor: colors.border,
         },
@@ -98,18 +101,13 @@ export function AppHeader({
 
 function HeaderBackButton({ onPress, color }: { onPress: () => void; color: string }) {
   const { colors } = useThemeColors();
-  const scale = useSharedValue(1);
-  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  const { animStyle, pressIn, pressOut } = usePressScale(0.9, 16, 300);
 
   return (
     <Animated.View style={animStyle}>
       <Pressable
-        onPressIn={() => {
-          scale.value = withSpring(0.9, { damping: 16, stiffness: 300 });
-        }}
-        onPressOut={() => {
-          scale.value = withSpring(1, { damping: 16, stiffness: 300 });
-        }}
+        onPressIn={pressIn}
+        onPressOut={pressOut}
         onPress={onPress}
         hitSlop={10}
         accessibilityRole="button"
@@ -141,8 +139,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 2,
   },
+  // The right slot holds arbitrary trailing content (status badges, counts,
+  // action buttons), so it sizes to its content and only reserves the icon
+  // width as a floor. A fixed width here silently clipped any trailing widget
+  // wider than one icon button.
   sideRight: {
+    minWidth: sizes.iconButton,
     alignItems: 'flex-end',
+    flexShrink: 0,
   },
   center: { flex: 1 },
   centerAlign: { alignItems: 'center' },

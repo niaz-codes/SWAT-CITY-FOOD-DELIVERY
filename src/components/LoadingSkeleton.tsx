@@ -17,8 +17,24 @@ type SkeletonProps = {
   style?: StyleProp<ViewStyle>;
 };
 
+/**
+ * Converts a `#RRGGBB` token into an `rgba()` string at the given alpha. Used by
+ * the light-mode shimmer, which cannot use a hardcoded white band because a
+ * white highlight is invisible against the light `skeleton` background.
+ * Non-hex tokens (already-rgba values) are returned untouched.
+ */
+function withAlpha(color: string, alpha: number): string {
+  const hex = color.replace('#', '');
+  if (hex.length !== 6) return color;
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  if ([r, g, b].some((n) => Number.isNaN(n))) return color;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function Shimmer({ children }: { children: React.ReactNode }) {
-  const { colors } = useThemeColors();
+  const { colors, dark } = useThemeColors();
   const translate = useSharedValue(-200);
 
   useEffect(() => {
@@ -29,12 +45,22 @@ function Shimmer({ children }: { children: React.ReactNode }) {
     transform: [{ translateX: translate.value }],
   }));
 
+  // Dark mode keeps its original white highlight; light mode needs a highlight
+  // derived from the light skeleton tokens so the sweep stays visible.
+  const band: [string, string, string] = dark
+    ? ['rgba(255,255,255,0)', 'rgba(255,255,255,0.55)', 'rgba(255,255,255,0)']
+    : [
+        withAlpha(colors.skeletonHighlight, 0),
+        withAlpha(colors.skeletonHighlight, 1),
+        withAlpha(colors.skeletonHighlight, 0),
+      ];
+
   return (
     <View style={styles.shimmerRoot}>
       {children}
       <Animated.View style={[styles.highlight, animStyle]}>
         <LinearGradient
-          colors={['rgba(255,255,255,0)', 'rgba(255,255,255,0.55)', 'rgba(255,255,255,0)']}
+          colors={band}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
           style={styles.highlightFill}
@@ -50,7 +76,12 @@ export function Skeleton({ width = '100%', height, rounded, style }: SkeletonPro
     <Shimmer>
       <View
         style={[
-          { width, height, borderRadius: rounded ?? height * 0.35, backgroundColor: colors.skeleton },
+          {
+            width,
+            height,
+            borderRadius: rounded ?? height * 0.35,
+            backgroundColor: colors.skeleton,
+          },
           style,
         ]}
       />
@@ -62,7 +93,12 @@ export function SkeletonCircle({ size, style }: { size: number; style?: StylePro
   const { colors } = useThemeColors();
   return (
     <Shimmer>
-      <View style={[{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.skeleton }, style]} />
+      <View
+        style={[
+          { width: size, height: size, borderRadius: size / 2, backgroundColor: colors.skeleton },
+          style,
+        ]}
+      />
     </Shimmer>
   );
 }
@@ -80,7 +116,17 @@ export function SkeletonRestaurantList({ count = 4 }: { count?: number }) {
 function SkeletonRestaurantRow() {
   const { colors } = useThemeColors();
   return (
-    <View style={[styles.rowCard, { backgroundColor: colors.surfaceRaised, borderRadius: radius.card, borderWidth: 1, borderColor: colors.border }]}>
+    <View
+      style={[
+        styles.rowCard,
+        {
+          backgroundColor: colors.surfaceRaised,
+          borderRadius: radius.card,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+      ]}
+    >
       <Skeleton width={76} height={76} rounded={radius.card} />
       <View style={styles.rowBody}>
         <Skeleton width="80%" height={18} />
@@ -96,7 +142,18 @@ export function SkeletonFoodGrid({ count = 4 }: { count?: number }) {
   return (
     <View style={styles.grid}>
       {Array.from({ length: count }).map((_, i) => (
-        <View key={i} style={[styles.gridCard, { backgroundColor: colors.surfaceRaised, borderRadius: radius.card, borderWidth: 1, borderColor: colors.border }]}>
+        <View
+          key={i}
+          style={[
+            styles.gridCard,
+            {
+              backgroundColor: colors.surfaceRaised,
+              borderRadius: radius.card,
+              borderWidth: 1,
+              borderColor: colors.border,
+            },
+          ]}
+        >
           <Skeleton height={90} rounded={radius.md} />
           <Skeleton width="88%" height={16} style={styles.mt} />
           <Skeleton width="70%" height={12} style={styles.mt} />
@@ -110,7 +167,9 @@ export function SkeletonFoodGrid({ count = 4 }: { count?: number }) {
 export function SkeletonBanner() {
   const { colors } = useThemeColors();
   return (
-    <View style={[styles.banner, { backgroundColor: colors.surfaceRaised, borderRadius: radius.xl }]}>
+    <View
+      style={[styles.banner, { backgroundColor: colors.surfaceRaised, borderRadius: radius.xl }]}
+    >
       <Skeleton height={170} rounded={radius.xl} />
     </View>
   );
@@ -121,7 +180,18 @@ export function SkeletonChatRow({ count = 3 }: { count?: number }) {
   return (
     <View>
       {Array.from({ length: count }).map((_, i) => (
-        <View key={i} style={[styles.rowCard, { backgroundColor: colors.surfaceRaised, borderRadius: radius.card, borderWidth: 1, borderColor: colors.border }]}>
+        <View
+          key={i}
+          style={[
+            styles.rowCard,
+            {
+              backgroundColor: colors.surfaceRaised,
+              borderRadius: radius.card,
+              borderWidth: 1,
+              borderColor: colors.border,
+            },
+          ]}
+        >
           <SkeletonCircle size={46} />
           <View style={styles.rowBody}>
             <Skeleton width="70%" height={15} />
@@ -140,7 +210,13 @@ const styles = StyleSheet.create({
   list: { gap: spacing.sm },
   grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
   gridCard: { width: '48%', padding: spacing.m, marginBottom: spacing.m },
-  rowCard: { flexDirection: 'row', gap: spacing.m, padding: spacing.sm, marginBottom: spacing.sm, alignItems: 'center' },
+  rowCard: {
+    flexDirection: 'row',
+    gap: spacing.m,
+    padding: spacing.sm,
+    marginBottom: spacing.sm,
+    alignItems: 'center',
+  },
   rowBody: { flex: 1, gap: spacing.s },
   banner: { marginBottom: spacing.l, padding: spacing.s },
   mt: { marginTop: spacing.s },

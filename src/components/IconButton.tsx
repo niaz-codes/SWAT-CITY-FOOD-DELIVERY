@@ -1,11 +1,12 @@
 import React from 'react';
 import { Pressable, StyleSheet, View, ViewStyle, StyleProp } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { AppText } from './AppText';
 import { useThemeColors } from '../theme';
 import { sizes, spacing } from '../theme/spacing';
 import { haptics } from '../hooks/useHaptics';
+import { usePressScale } from '../hooks/usePressScale';
 
 type Props = {
   name: keyof typeof Ionicons.glyphMap;
@@ -31,19 +32,13 @@ export function IconButton({
   style,
 }: Props) {
   const { colors } = useThemeColors();
-  const scale = useSharedValue(1);
-
-  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  const { animStyle, pressIn, pressOut } = usePressScale(0.88, 15, 320);
 
   return (
     <Animated.View style={animStyle}>
       <Pressable
-        onPressIn={() => {
-          scale.value = withSpring(0.88, { damping: 15, stiffness: 320 });
-        }}
-        onPressOut={() => {
-          scale.value = withSpring(1, { damping: 15, stiffness: 320 });
-        }}
+        onPressIn={pressIn}
+        onPressOut={pressOut}
         onPress={() => {
           haptics.light();
           onPress?.();

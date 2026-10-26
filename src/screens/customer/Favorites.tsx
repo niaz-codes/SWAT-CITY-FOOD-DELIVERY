@@ -10,11 +10,12 @@ import { ArtTile } from '../../components/ArtTile';
 import { RatingStars } from '../../components/RatingStars';
 import { EmptyState } from '../../components/EmptyState';
 import { favoriteApi } from '../../services/api';
+import { apiErrorMessage } from '../../services/client';
 import { useAsyncData } from '../../hooks/useAsyncData';
 import { useThemeColors } from '../../theme';
 import { spacing } from '../../theme/spacing';
 import { formatCurrency, timeAgo } from '../../utils/format';
-import { Favorite, FavoriteKind } from '../../types/domain';
+import { Favorite } from '../../types/domain';
 import { haptics } from '../../hooks/useHaptics';
 import { useToast } from '../../state/ToastProvider';
 
@@ -23,8 +24,9 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Favorites'>;
 export function FavoritesScreen({ navigation }: Props) {
   const { colors } = useThemeColors();
   const insets = useSafeAreaInsets();
-  const { success } = useToast();
+  const { success, error: toastError } = useToast();
   const [removed, setRemoved] = useState<Set<string>>(new Set());
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
   const data = useAsyncData(() => favoriteApi.get(), []);
 
@@ -36,10 +38,20 @@ export function FavoritesScreen({ navigation }: Props) {
     else navigation.navigate('FoodSearch');
   };
 
-  const remove = (f: Favorite) => {
+  /** Deletes the favorite on the server, then drops it from the grid. */
+  const remove = async (f: Favorite) => {
+    if (removingId) return;
     haptics.medium();
-    setRemoved((prev) => new Set(prev).add(f.id));
-    success(`${f.name} removed from favorites`);
+    setRemovingId(f.id);
+    try {
+      await favoriteApi.remove(f.id);
+      setRemoved((prev) => new Set(prev).add(f.id));
+      success(`${f.name} removed from favorites`);
+    } catch (err) {
+      toastError(apiErrorMessage(err, `Could not remove ${f.name}. Try again.`));
+    } finally {
+      setRemovingId(null);
+    }
   };
 
   return (
@@ -50,13 +62,21 @@ export function FavoritesScreen({ navigation }: Props) {
         keyExtractor={(f) => f.id}
         numColumns={2}
         columnWrapperStyle={styles.row}
-        renderItem={({ item }) => <FavoriteTile favorite={item} onOpen={() => open(item)} onRemove={() => remove(item)} />}
+        renderItem={({ item }) => (
+          <FavoriteTile favorite={item} onOpen={() => open(item)} onRemove={() => remove(item)} />
+        )}
         contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + spacing.xl }]}
         ListEmptyComponent={
           data.loading ? (
             <EmptyState icon="heart-outline" title="Loading…" message="Fetching your favorites." />
           ) : (
-            <EmptyState icon="heart-outline" title="No favorites yet" message="Tap the heart on a kitchen or dish to save it here." actionLabel="Browse food" onAction={() => navigation.navigate('Main')} />
+            <EmptyState
+              icon="heart-outline"
+              title="No favorites yet"
+              message="Tap the heart on a kitchen or dish to save it here."
+              actionLabel="Browse food"
+              onAction={() => navigation.navigate('Main')}
+            />
           )
         }
       />
@@ -64,10 +84,20 @@ export function FavoritesScreen({ navigation }: Props) {
   );
 }
 
-function FavoriteTile({ favorite, onOpen, onRemove }: { favorite: Favorite; onOpen: () => void; onRemove: () => void }) {
+function FavoriteTile({
+  favorite,
+  onOpen,
+  onRemove,
+}: {
+  favorite: Favorite;
+  onOpen: () => void;
+  onRemove: () => void;
+}) {
   const { colors } = useThemeColors();
   return (
-    <View style={[styles.tile, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+    <View
+      style={[styles.tile, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
+    >
       <Pressable onPress={onOpen} style={styles.tileBody}>
         <ArtTile gradient={favorite.gradient} emoji={favorite.emoji} size={54} rounded={16} />
         <AppText variant="title" weight="bold" color={colors.textPrimary} numberOfLines={1}>

@@ -28,41 +28,61 @@ export function LocationPickerScreen({ navigation, route }: Props) {
   const [searching, setSearching] = useState(false);
   const [saved, setSaved] = useState<Address[]>([]);
 
+  const trimmed = query.trim();
+
+  // Clear stale results the moment the query is emptied, adjusted during
+  // render (React's "adjust state when props change" pattern) rather than in
+  // an effect.
+  const [prevTrimmed, setPrevTrimmed] = useState(trimmed);
+  if (trimmed !== prevTrimmed) {
+    setPrevTrimmed(trimmed);
+    if (!trimmed) setResults([]);
+  }
+
   useEffect(() => {
     addressApi.getSaved().then(setSaved);
   }, []);
 
   useEffect(() => {
-    if (!query.trim()) {
-      setResults([]);
-      setSearching(false);
-      return;
-    }
+    if (!trimmed) return;
+    let active = true;
     const t = setTimeout(async () => {
       setSearching(true);
       try {
         const r = await addressApi.searchPlaces(query);
-        setResults(r);
+        if (active) setResults(r);
       } finally {
-        setSearching(false);
+        if (active) setSearching(false);
       }
     }, 350);
-    return () => clearTimeout(t);
-  }, [query]);
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
+  }, [query, trimmed]);
 
   const select = (address: Address) => {
     haptics.medium();
-    if (mode === 'pickup') rideLocationStore.pickup = address;
-    else rideLocationStore.dropoff = address;
+    if (mode === 'pickup') rideLocationStore.setPickup(address);
+    else rideLocationStore.setDropoff(address);
     success(`${address.label} set as ${mode}`);
     navigation.goBack();
   };
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
-      <AppHeader title={mode === 'pickup' ? 'Choose pickup' : 'Choose dropoff'} onBack={() => navigation.goBack()} elevated />
+      <AppHeader
+        title={mode === 'pickup' ? 'Choose pickup' : 'Choose dropoff'}
+        onBack={() => navigation.goBack()}
+        elevated
+      />
       <View style={styles.searchWrap}>
-        <SearchBar value={query} onChangeText={setQuery} placeholder="Search Swat City…" autoFocus />
+        <SearchBar
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search Swat City…"
+          autoFocus
+        />
       </View>
 
       <FlatList
@@ -88,7 +108,12 @@ export function LocationPickerScreen({ navigation, route }: Props) {
                   <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
                 </View>
                 <Divider spacing={spacing.m} />
-                <AppText variant="captionBold" color={colors.textMuted} uppercase style={styles.sectionLabel}>
+                <AppText
+                  variant="captionBold"
+                  color={colors.textMuted}
+                  uppercase
+                  style={styles.sectionLabel}
+                >
                   SAVED PLACES
                 </AppText>
                 {saved.map((a) => (
@@ -104,12 +129,38 @@ export function LocationPickerScreen({ navigation, route }: Props) {
             )}
 
             {query.trim() !== '' && !searching && results.length === 0 && (
-              <EmptyState icon="location-outline" title="No places found" message="Try another area like Mingora, Saidu Sharif or Bahrain." />
+              <>
+                <AddressCard
+                  address={{
+                    id: 'custom',
+                    label: 'Use this address manually',
+                    full: query,
+                    area: '',
+                    lat: 0,
+                    lng: 0,
+                  }}
+                  onPress={() =>
+                    select({
+                      id: 'custom',
+                      label: 'Custom location',
+                      full: query,
+                      area: '',
+                      lat: 0,
+                      lng: 0,
+                    })
+                  }
+                />
+                <EmptyState
+                  icon="location-outline"
+                  title="No places found"
+                  message="Try another area like Mingora, Saidu Sharif or Bahrain."
+                />
+              </>
             )}
 
-            {query.trim() !== '' && !searching && results.map((a) => (
-              <AddressCard key={a.id} address={a} onPress={() => select(a)} />
-            ))}
+            {query.trim() !== '' &&
+              !searching &&
+              results.map((a) => <AddressCard key={a.id} address={a} onPress={() => select(a)} />)}
           </View>
         }
         contentContainerStyle={styles.listContent}
@@ -126,7 +177,13 @@ const styles = StyleSheet.create({
   listContent: { paddingHorizontal: spacing.m },
   list: { paddingBottom: spacing.xl },
   currentRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.m },
-  currentIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  currentIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   currentText: { flex: 1 },
   sectionLabel: { marginBottom: spacing.sm },
   searching: { paddingVertical: spacing.l },

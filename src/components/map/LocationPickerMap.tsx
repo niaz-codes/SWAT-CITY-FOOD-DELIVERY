@@ -53,7 +53,7 @@ export function LocationPickerMap({
   hint,
 }: Props) {
   const { colors } = useThemeColors();
-  const { error, success } = useToast();
+  const { error } = useToast();
   const mapRef = useRef<LeafletMapHandle>(null);
 
   const [selected, setSelected] = useState<PickedLocation | null>(value ?? null);

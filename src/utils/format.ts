@@ -73,3 +73,12 @@ export function maskPhone(phone: string): string {
   if (d.length < 6) return phone;
   return `${d.slice(0, 3)} ••• ${d.slice(-3)}`;
 }
+
+/**
+ * The one email check every sign-in / sign-up screen uses. Loosely the same
+ * shape the backend's zod email schema accepts: something@something.tld —
+ * deliberately permissive on the local part.
+ */
+export function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
+}

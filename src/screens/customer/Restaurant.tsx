@@ -72,11 +72,20 @@ export function RestaurantScreen({ navigation, route }: Props) {
           }}
         />
         {cartMatches && (
-          <CartStrip count={count} subtotal={subtotal} onPress={() => navigation.navigate('Cart')} />
+          <CartStrip
+            count={count}
+            subtotal={subtotal}
+            onPress={() => navigation.navigate('Cart')}
+          />
         )}
         {Object.entries(grouped).map(([category, items], idx) => (
           <Animated.View key={category} entering={FadeInDown.delay(idx * 60).duration(300)}>
-            <AppText variant="h4" weight="extraBold" color={colors.textPrimary} style={styles.catTitle}>
+            <AppText
+              variant="h4"
+              weight="extraBold"
+              color={colors.textPrimary}
+              style={styles.catTitle}
+            >
               {category}
             </AppText>
             {items.map((item) => (
@@ -84,7 +93,9 @@ export function RestaurantScreen({ navigation, route }: Props) {
                 key={item.id}
                 item={item}
                 variant="row"
-                onPress={() => navigation.navigate('FoodDetails', { item, restaurantName: current.name })}
+                onPress={() =>
+                  navigation.navigate('FoodDetails', { item, restaurantName: current.name })
+                }
               />
             ))}
             <Divider spacing={spacing.l} />
@@ -100,7 +111,11 @@ export function RestaurantScreen({ navigation, route }: Props) {
         data={[]}
         keyExtractor={() => 'r'}
         renderItem={() => null}
-        ListHeaderComponent={renderContent()}
+        // Passed as the render function rather than the call result: the
+        // component may return null while loading, which is a valid element but
+        // not a valid ListHeaderComponent value, and calling it inline would
+        // also remount the header on every render.
+        ListHeaderComponent={renderContent}
         contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 40 }]}
       />
 
@@ -115,7 +130,10 @@ export function RestaurantScreen({ navigation, route }: Props) {
                 success(current ? `${current.name} added to favorites` : 'Saved');
               }}
               hitSlop={8}
-              style={[styles.fab, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
+              style={[
+                styles.fab,
+                { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+              ]}
             >
               <Ionicons name="heart-outline" size={20} color={colors.danger} />
             </Pressable>
@@ -127,15 +145,30 @@ export function RestaurantScreen({ navigation, route }: Props) {
   );
 }
 
-function CartStrip({ count, subtotal, onPress }: { count: number; subtotal: number; onPress: () => void }) {
+function CartStrip({
+  count,
+  subtotal,
+  onPress,
+}: {
+  count: number;
+  subtotal: number;
+  onPress: () => void;
+}) {
   const { colors } = useThemeColors();
   return (
     <Animated.View entering={FadeInDown.duration(320)}>
       <Pressable onPress={onPress} style={[styles.cartStrip, { backgroundColor: colors.primary }]}>
         <View style={styles.cartBadge}>
-          <AppText variant="microBold" color={colors.onPrimary}>{count}</AppText>
+          <AppText variant="microBold" color={colors.onPrimary}>
+            {count}
+          </AppText>
         </View>
-        <AppText variant="title" weight="bold" color={colors.onPrimary} style={styles.cartStripText}>
+        <AppText
+          variant="title"
+          weight="bold"
+          color={colors.onPrimary}
+          style={styles.cartStripText}
+        >
           View cart · {formatCurrency(subtotal)}
         </AppText>
         <Ionicons name="chevron-forward-circle" size={22} color={colors.onPrimary} />
@@ -159,19 +192,42 @@ type HeroProps = {
   onFavorite: () => void;
 };
 
-function Hero({ name, cuisine, gradient, emoji, rating, reviews, deliveryTimeMin, deliveryFee, deliveryKM, freeDelivery, promo, onFavorite }: HeroProps) {
+function Hero({
+  name,
+  cuisine,
+  gradient,
+  emoji,
+  rating,
+  reviews,
+  deliveryTimeMin,
+  deliveryFee,
+  deliveryKM,
+  freeDelivery,
+  promo,
+  onFavorite,
+}: HeroProps) {
   const { colors } = useThemeColors();
 
   return (
     <View style={styles.hero}>
-      <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.heroBand}>
+      <LinearGradient
+        colors={gradient}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.heroBand}
+      >
         <View style={styles.heroRing} />
         <View style={styles.heroRingTwo} />
         <View style={styles.heroArtWrap}>
           <AppText style={styles.heroEmoji}>{emoji}</AppText>
         </View>
       </LinearGradient>
-      <View style={[styles.heroBody, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+      <View
+        style={[
+          styles.heroBody,
+          { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+        ]}
+      >
         <View style={styles.heroTitleRow}>
           <View style={styles.heroTitles}>
             <AppText variant="h3" weight="extraBold" color={colors.textPrimary}>
@@ -192,7 +248,10 @@ function Hero({ name, cuisine, gradient, emoji, rating, reviews, deliveryTimeMin
         <RatingStars rating={rating} showValue reviews={reviews} />
         <View style={styles.metaGrid}>
           <Meta icon="time-outline" label={`${deliveryTimeMin} min`} />
-          <Meta icon="bicycle-outline" label={freeDelivery ? 'Free delivery' : `Rs ${deliveryFee}`} />
+          <Meta
+            icon="bicycle-outline"
+            label={freeDelivery ? 'Free delivery' : `Rs ${deliveryFee}`}
+          />
           <Meta icon="receipt-outline" label="No contact delivery" />
         </View>
         {promo && (
@@ -219,7 +278,12 @@ function Meta({ icon, label }: { icon: keyof typeof Ionicons.glyphMap; label: st
   return (
     <View style={[styles.meta, { backgroundColor: colors.surfaceMuted }]}>
       <Ionicons name={icon} size={15} color={colors.primary} />
-      <AppText variant="smallMedium" weight="semiBold" color={colors.textSecondary} numberOfLines={1}>
+      <AppText
+        variant="smallMedium"
+        weight="semiBold"
+        color={colors.textSecondary}
+        numberOfLines={1}
+      >
         {label}
       </AppText>
     </View>
@@ -252,8 +316,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
   },
-  heroRing: { position: 'absolute', width: 200, height: 200, borderRadius: 100, top: -80, right: -50, backgroundColor: 'rgba(255,255,255,0.12)' },
-  heroRingTwo: { position: 'absolute', width: 120, height: 120, borderRadius: 60, bottom: -50, left: 30, backgroundColor: 'rgba(0,0,0,0.08)' },
+  heroRing: {
+    position: 'absolute',
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    top: -80,
+    right: -50,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  heroRingTwo: {
+    position: 'absolute',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    bottom: -50,
+    left: 30,
+    backgroundColor: 'rgba(0,0,0,0.08)',
+  },
   heroArtWrap: {
     width: 76,
     height: 76,
@@ -262,7 +342,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  heroEmoji: { fontSize: 38, textShadowColor: 'rgba(0,0,0,0.25)', textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 5 },
+  heroEmoji: {
+    fontSize: 38,
+    textShadowColor: 'rgba(0,0,0,0.25)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 5,
+  },
   heroBody: {
     borderRadius: 22,
     borderWidth: 1,
@@ -276,11 +361,37 @@ const styles = StyleSheet.create({
   },
   heroTitleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   heroTitles: { flex: 1, gap: 2 },
-  favBtn: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  favBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   metaGrid: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
-  meta: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.sm, height: 30, borderRadius: 15 },
-  promo: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.sm, height: 34, borderRadius: 12 },
-  infoNote: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.sm, paddingHorizontal: spacing.xs },
+  meta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    height: 30,
+    borderRadius: 15,
+  },
+  promo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    height: 34,
+    borderRadius: 12,
+  },
+  infoNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.xs,
+  },
   catTitle: { marginTop: spacing.xl, marginBottom: spacing.sm },
   cartStrip: {
     flexDirection: 'row',

@@ -20,7 +20,15 @@ type Props = {
   style?: StyleProp<ViewStyle>;
 };
 
-export function RiderCard({ rider, onCall, onSMS, onPress, showTripMeta, selection, style }: Props) {
+export function RiderCard({
+  rider,
+  onCall,
+  onSMS,
+  onPress,
+  showTripMeta,
+  selection,
+  style,
+}: Props) {
   const { colors } = useThemeColors();
 
   return (
@@ -29,7 +37,11 @@ export function RiderCard({ rider, onCall, onSMS, onPress, showTripMeta, selecti
         haptics.light();
         onPress?.();
       }}
-      style={[styles.card, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }, style]}
+      style={[
+        styles.card,
+        { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+        style,
+      ]}
     >
       <Avatar name={rider.name} gradient={rider.avatarGradient} size={48} />
       <View style={styles.info}>
@@ -65,14 +77,17 @@ export function RiderCard({ rider, onCall, onSMS, onPress, showTripMeta, selecti
       </View>
       {(onCall || onSMS) && (
         <View style={styles.actions}>
-          {onCall && (
-            <IconAction icon="call" onPress={onCall} primary />
-          )}
+          {onCall && <IconAction icon="call" onPress={onCall} primary />}
           {onSMS && <IconAction icon="chatbubble-ellipses" onPress={onSMS} />}
         </View>
       )}
       {selection && (
-        <View style={[styles.selection, { borderColor: colors.primary, backgroundColor: colors.primarySoft }]}>
+        <View
+          style={[
+            styles.selection,
+            { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+          ]}
+        >
           <Ionicons name="checkmark" size={16} color={colors.primaryStrong} />
         </View>
       )}
@@ -80,7 +95,15 @@ export function RiderCard({ rider, onCall, onSMS, onPress, showTripMeta, selecti
   );
 }
 
-function IconAction({ icon, onPress, primary }: { icon: keyof typeof Ionicons.glyphMap; onPress: () => void; primary?: boolean }) {
+function IconAction({
+  icon,
+  onPress,
+  primary,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  onPress: () => void;
+  primary?: boolean;
+}) {
   const { colors } = useThemeColors();
   return (
     <Pressable

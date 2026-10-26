@@ -15,7 +15,12 @@ type TypeVariant = {
   letterSpacing?: number;
 };
 
-const type = (fontSize: number, lineHeight: number, fontFamily: string, letterSpacing = 0): TypeVariant => ({
+const type = (
+  fontSize: number,
+  lineHeight: number,
+  fontFamily: string,
+  letterSpacing = 0,
+): TypeVariant => ({
   fontSize,
   lineHeight,
   fontFamily,

@@ -58,7 +58,12 @@ function generateCity(rng: () => number): CityLayout {
   }
   const parks: number[][] = [];
   for (let i = 0; i < 5; i++) {
-    parks.push([rng() * W * 0.55 + W * 0.08, rng() * H * 0.45 + H * 0.1, 30 + rng() * 40, 24 + rng() * 26]);
+    parks.push([
+      rng() * W * 0.55 + W * 0.08,
+      rng() * H * 0.45 + H * 0.1,
+      30 + rng() * 40,
+      24 + rng() * 26,
+    ]);
   }
   return { horizontals, verticals, parks };
 }
@@ -66,6 +71,7 @@ function generateCity(rng: () => number): CityLayout {
 const CITY = generateCity(mulberry32(20240926));
 
 function pointDistance(a: MapPoint, b: MapPoint) {
+  'worklet';
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
@@ -88,6 +94,7 @@ function polylineLength(points: MapPoint[]) {
 }
 
 function pointAt(points: MapPoint[], length: number, dist: number): MapPoint {
+  'worklet';
   let acc = 0;
   for (let i = 1; i < points.length; i++) {
     const seg = pointDistance(points[i - 1]!, points[i]!);
@@ -140,7 +147,9 @@ export function MapComponent({
   const animatedDashProps = useAnimatedProps(() => ({ strokeDashoffset: dashOffset.value }));
 
   const riderProps = useAnimatedProps(() => {
-    const p = isShared ? (progress as SharedValue<number>).value : (progress as number | undefined) ?? 0;
+    const p = isShared
+      ? (progress as SharedValue<number>).value
+      : ((progress as number | undefined) ?? 0);
     const clamped = Math.min(1, Math.max(0, p));
     const pos = pointAt(route, routeLength, clamped * routeLength);
     return { cx: pos.x, cy: pos.y };
@@ -172,7 +181,16 @@ export function MapComponent({
         <Rect width={W} height={H} fill={colors.mapBuilding} />
 
         {layout.parks.map(([x, y, pw, ph], i) => (
-          <Rect key={`park_${i}`} x={x} y={y} width={pw} height={ph} rx={8} fill={colors.primarySoft} opacity={0.55} />
+          <Rect
+            key={`park_${i}`}
+            x={x}
+            y={y}
+            width={pw}
+            height={ph}
+            rx={8}
+            fill={colors.primarySoft}
+            opacity={0.55}
+          />
         ))}
 
         {/* river */}
@@ -187,14 +205,38 @@ export function MapComponent({
 
         {/* roads */}
         {layout.horizontals.map((y, i) => (
-          <Rect key={`h_${i}`} x={-10} y={y - 3} width={W + 20} height={6} fill={colors.mapRoad} rx={3} />
+          <Rect
+            key={`h_${i}`}
+            x={-10}
+            y={y - 3}
+            width={W + 20}
+            height={6}
+            fill={colors.mapRoad}
+            rx={3}
+          />
         ))}
         {layout.verticals.map((x, i) => (
-          <Rect key={`v_${i}`} x={x - 3} y={-10} width={6} height={H + 20} fill={colors.mapRoad} rx={3} />
+          <Rect
+            key={`v_${i}`}
+            x={x - 3}
+            y={-10}
+            width={6}
+            height={H + 20}
+            fill={colors.mapRoad}
+            rx={3}
+          />
         ))}
 
         {/* route */}
-        <Polyline points={routePoints} stroke={colors.mapRoute} strokeWidth={7} strokeLinejoin="round" strokeLinecap="round" fill="none" opacity={0.95} />
+        <Polyline
+          points={routePoints}
+          stroke={colors.mapRoute}
+          strokeWidth={7}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          fill="none"
+          opacity={0.95}
+        />
         {animateRouteDash && (
           <AnimatedPolyline
             points={routePoints}
@@ -209,19 +251,44 @@ export function MapComponent({
         )}
 
         {/* pickup marker */}
-        <AnimatedCircle animatedProps={pickupPulseProps} cx={pickup.x} cy={pickup.y} fill={colors.primary} />
-        <Circle cx={pickup.x} cy={pickup.y} r={8} fill={colors.primary} stroke="#FFFFFF" strokeWidth={2.5} />
+        <AnimatedCircle
+          animatedProps={pickupPulseProps}
+          cx={pickup.x}
+          cy={pickup.y}
+          fill={colors.primary}
+        />
+        <Circle
+          cx={pickup.x}
+          cy={pickup.y}
+          r={8}
+          fill={colors.primary}
+          stroke="#FFFFFF"
+          strokeWidth={2.5}
+        />
         <Circle cx={pickup.x} cy={pickup.y} r={2.6} fill="#FFFFFF" />
 
         {/* dropoff marker */}
-        <Circle cx={dropoff.x} cy={dropoff.y} r={8} fill={colors.danger} stroke="#FFFFFF" strokeWidth={2.5} />
+        <Circle
+          cx={dropoff.x}
+          cy={dropoff.y}
+          r={8}
+          fill={colors.danger}
+          stroke="#FFFFFF"
+          strokeWidth={2.5}
+        />
         <Circle cx={dropoff.x} cy={dropoff.y} r={2.6} fill="#FFFFFF" />
 
         {/* rider marker */}
         {progress != null && (
           <>
             <AnimatedCircle animatedProps={riderPulseProps} fill={colors.ride} />
-            <AnimatedCircle animatedProps={riderProps} r={9} fill={colors.ride} stroke="#FFFFFF" strokeWidth={2.5} />
+            <AnimatedCircle
+              animatedProps={riderProps}
+              r={9}
+              fill={colors.ride}
+              stroke="#FFFFFF"
+              strokeWidth={2.5}
+            />
             <AnimatedCircle animatedProps={riderProps} r={3} fill="#FFFFFF" />
           </>
         )}

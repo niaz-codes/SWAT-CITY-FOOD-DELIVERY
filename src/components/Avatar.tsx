@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, View, ViewStyle } from 'react-native';
+import { Image, StyleSheet, View, ViewStyle } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AppText } from './AppText';
 import { initials } from '../utils/format';
@@ -10,21 +10,41 @@ type Props = {
   gradient: [string, string];
   size?: number;
   style?: ViewStyle;
+  /**
+   * Remote photo (Cloudinary) to show instead of the initials fallback.
+   * Rider profile photos are admin-approved, so callers pass the stored URL.
+   */
+  uri?: string | null;
 };
 
-export function Avatar({ name, gradient, size = 46, style }: Props) {
+export function Avatar({ name, gradient, size = 46, style, uri }: Props) {
+  const radius = size * 0.36;
   return (
-    <View style={[styles.wrap, { width: size, height: size, borderRadius: size * 0.36 }, style]}>
-      <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.fill}>
-        <AppText
-          variant="title"
-          weight="bold"
-          color="#FFFFFF"
-          style={[styles.text, { fontSize: size * 0.38 }]}
+    <View style={[styles.wrap, { width: size, height: size, borderRadius: radius }, style]}>
+      {uri ? (
+        <Image
+          source={{ uri }}
+          style={{ width: size, height: size, borderRadius: radius }}
+          // Avatars are decorative next to the user's name in every usage.
+          accessibilityIgnoresInvertColors
+        />
+      ) : (
+        <LinearGradient
+          colors={gradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.fill}
         >
-          {initials(name)}
-        </AppText>
-      </LinearGradient>
+          <AppText
+            variant="title"
+            weight="bold"
+            color="#FFFFFF"
+            style={[styles.text, { fontSize: size * 0.38 }]}
+          >
+            {initials(name)}
+          </AppText>
+        </LinearGradient>
+      )}
     </View>
   );
 }

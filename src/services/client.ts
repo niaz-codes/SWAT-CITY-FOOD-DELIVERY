@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /**
- * Centralized API client for the Swat City backend.
+ * Centralized API client for the Swat City Food Delivery backend.
  *
  * Base URL comes from EXPO_PUBLIC_API_URL, which is inlined at build time
  * (eas.json `env` for EAS builds, .env for local runs). The fallback is the
@@ -35,6 +35,18 @@ const REQUEST_TIMEOUT_MS = 12_000;
  */
 const UPLOAD_TIMEOUT_MS = 60_000;
 
+/**
+ * Timeout for the authentication calls.
+ *
+ * These are the slowest endpoints in the app: the backend hands the 6-digit
+ * code to Supabase Auth and waits for the provider to accept the mail, which
+ * regularly takes 5-8 seconds on a mobile connection. The ordinary JSON budget
+ * of 12s was too tight for that and aborted healthy sign-ins with "the request
+ * timed out" - on a slow link the mail still arrived, so the user was told the
+ * login failed while a code sat in their inbox.
+ */
+export const AUTH_TIMEOUT_MS = 30_000;
+
 export type ApiTokens = {
   accessToken: string;
   refreshToken: string;
@@ -44,9 +56,9 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 export class ApiError extends Error {
   readonly status?: number;
-  readonly kind: 'http' | 'network';
+  readonly kind: 'http' | 'network' | 'timeout';
 
-  constructor(message: string, status?: number, kind: 'http' | 'network' = 'http') {
+  constructor(message: string, status?: number, kind: 'http' | 'network' | 'timeout' = 'http') {
     super(message);
     this.name = 'ApiError';
     this.status = status;
@@ -55,8 +67,14 @@ export class ApiError extends Error {
   }
 }
 
+/** True when the request never reached the server (connection refused, DNS, offline). */
 export function isNetworkError(error: unknown): boolean {
   return error instanceof ApiError && error.kind === 'network';
+}
+
+/** True when the request was cut short by the client's own deadline. */
+export function isTimeoutError(error: unknown): boolean {
+  return error instanceof ApiError && error.kind === 'timeout';
 }
 
 /**
@@ -162,6 +180,60 @@ async function dropExpiredSession(): Promise<void> {
   for (const listener of sessionExpiredListeners) listener();
 }
 
+// ---------------------------------------------------------------------------
+// Silent token refresh
+// ---------------------------------------------------------------------------
+
+/** Milliseconds before `exp` at which a token counts as "about to die". */
+const TOKEN_REFRESH_MARGIN_MS = 60_000;
+
+/** 401 on these cleanup endpoints must never trigger another refresh call. */
+const REFRESH_PATH = '/auth/refresh';
+
+let refreshInFlight: Promise<ApiTokens | null> | null = null;
+
+/**
+ * Exchanges the stored refresh token for a fresh session token pair.
+ *
+ * Concurrent callers share one in-flight request, so five screens hitting 401
+ * at the same moment produce exactly one `/auth/refresh` call. Returns null
+ * when there is no refresh token or the backend rejects it (rotated out,
+ * suspended, logged in elsewhere). Clearing the stored tokens is the caller's
+ * decision.
+ */
+export async function refreshAccessToken(): Promise<ApiTokens | null> {
+  const stored = await getApiTokens();
+  if (!stored?.refreshToken) return null;
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const result: ExecuteResult = await execute(`${API_BASE_URL}${REFRESH_PATH}`, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken: stored.refreshToken }),
+        });
+        const data = result.body as { data?: { accessToken?: string; refreshToken?: string } } | null;
+        const accessToken = data?.data?.accessToken;
+        const refreshToken = data?.data?.refreshToken ?? stored.refreshToken;
+        if (result.httpStatus !== 200 || !accessToken) return null;
+        const tokens: ApiTokens = { accessToken, refreshToken };
+        await setApiTokens(tokens);
+        return tokens;
+      } catch {
+        return null;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
+}
+
+function tokenExpiresWithin(token: string, marginMs: number): boolean {
+  const exp = jwtExpiryMs(token);
+  return exp !== null && Date.now() >= exp - marginMs;
+}
+
 type ApiEnvelope = {
   success?: boolean;
   data?: unknown;
@@ -182,7 +254,11 @@ async function execute(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(rawUrl, init as RequestInit);
+    // The signal has to be handed to fetch, otherwise the deadline above never
+    // reaches the network stack and a stalled request spins forever with the
+    // button in its loading state. Every call therefore ends in a definite
+    // answer: a response, a timeout, or a connection failure.
+    const res = await fetch(rawUrl, { ...init, signal: controller.signal } as RequestInit);
     const text = await res.text();
     let body: ApiEnvelope | null = null;
     if (text) {
@@ -194,13 +270,15 @@ async function execute(
     }
     return { httpStatus: res.status, body };
   } catch (error) {
-    const timedOut = (error as Error)?.name === 'AbortError';
+    const name = (error as Error)?.name;
+    const message = (error as Error)?.message ?? '';
+    const timedOut = name === 'AbortError' || /abort/i.test(message);
     throw new ApiError(
       timedOut
-        ? 'The request timed out. Please try again.'
+        ? 'The request timed out. Please check your connection and try again.'
         : 'Network unreachable. Check your connection.',
       undefined,
-      'network',
+      timedOut ? 'timeout' : 'network',
     );
   } finally {
     clearTimeout(timer);
@@ -225,44 +303,67 @@ async function request<T>(
   // fetch for uploads instead of being forced to JSON.
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
   if (body !== undefined && !isFormData) headers['Content-Type'] = 'application/json';
+
+  const isRefreshPath = path.startsWith(REFRESH_PATH);
+
   if (auth) {
     const token = await getAccessToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
+    if (token) {
+      // Proactive refresh: when the token is inside its last minute, swap it
+      // first so the in-flight request does not have to die with a 401.
+      if (tokenExpiresWithin(token, TOKEN_REFRESH_MARGIN_MS)) {
+        const refreshed = await refreshAccessToken();
+        headers.Authorization = `Bearer ${refreshed?.accessToken ?? token}`;
+      } else {
+        headers.Authorization = `Bearer ${token}`;
+      }
+    }
   }
 
   const safePath = path.startsWith('/') ? path : `/${path}`;
   const rawUrl = `${API_BASE_URL}${safePath}`;
-  const init: RequestInit & { signal?: AbortSignal } = {
+  const makeInit = (extraHeaders?: Record<string, string>): RequestInit & { signal?: AbortSignal } => ({
     method,
-    headers,
+    headers: extraHeaders ? { ...headers, ...extraHeaders } : headers,
     body: body === undefined ? undefined : isFormData ? (body as FormData) : JSON.stringify(body),
-  };
+  });
 
   let result: ExecuteResult;
   try {
-    result = await execute(rawUrl, init, timeoutMs);
+    result = await execute(rawUrl, makeInit(), timeoutMs);
   } catch (error) {
-    // An upload is retried only when the failure was immediate (the connection
-    // was refused before any data moved). A timeout means the photo was already
-    // partway upstream; re-sending the whole body would double the bytes on an
-    // already-slow link and land on the same timeout, so it is reported instead.
-    const retryable = !isFormData || !(error instanceof ApiError && error.kind === 'network');
-    if (retryable && isNetworkError(error)) {
+    // Only a connection that failed before anything moved is worth repeating.
+    // A timeout means the request was already on the wire - resending would
+    // double the bytes on an already-slow link and land on the same deadline.
+    // Uploads are never repeated: the photo may be partway upstream already.
+    const retryable = !isFormData && isNetworkError(error);
+    if (retryable) {
       await sleep(300);
-      result = await execute(rawUrl, init, timeoutMs);
+      result = await execute(rawUrl, makeInit(), timeoutMs);
     } else {
       throw error;
     }
   }
 
-  const { httpStatus, body: json } = result;
-  // A 401 alone does not mean the session died: the backend also returns it
-  // for ordinary authorization failures. Only a token that is actually past its
-  // own `exp` may clear the session, otherwise a single forbidden call would
-  // sign the user out moments after a successful sign-in.
-  if (httpStatus === 401 && auth && (await isAccessTokenExpired())) {
-    await dropExpiredSession();
-    throw new ApiError(json?.message ?? 'Your session has expired. Please sign in again.', 401);
+  let { httpStatus, body: json } = result;
+
+  // A 401 does not always mean the session died: the backend also returns it
+  // for ordinary authorization failures. Try a silent refresh first; the
+  // session is only dropped when the refresh itself cannot mint a token AND
+  // the current access token is already past its own `exp`.
+  if (httpStatus === 401 && auth && !isRefreshPath) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      result = await execute(rawUrl, makeInit({ Authorization: `Bearer ${refreshed.accessToken}` }), timeoutMs);
+      httpStatus = result.httpStatus;
+      json = result.body;
+    }
+    if (httpStatus === 401) {
+      if (await isAccessTokenExpired()) {
+        await dropExpiredSession();
+      }
+      throw new ApiError(json?.message ?? 'Your session has expired. Please sign in again.', 401);
+    }
   }
   if (json && json.success === false) {
     throw new ApiError(json.message ?? 'Request failed', httpStatus);
@@ -277,14 +378,14 @@ async function request<T>(
   };
 }
 
-export const httpGet = <T = unknown>(path: string, auth = true) =>
-  request<T>(path, 'GET', undefined, auth);
-export const httpPost = <T = unknown>(path: string, body?: unknown, auth = true) =>
-  request<T>(path, 'POST', body, auth);
-export const httpPatch = <T = unknown>(path: string, body?: unknown, auth = true) =>
-  request<T>(path, 'PATCH', body, auth);
-export const httpDelete = <T = unknown>(path: string, auth = true) =>
-  request<T>(path, 'DELETE', undefined, auth);
+export const httpGet = <T = unknown>(path: string, auth = true, timeoutMs?: number) =>
+  request<T>(path, 'GET', undefined, auth, timeoutMs ?? REQUEST_TIMEOUT_MS);
+export const httpPost = <T = unknown>(path: string, body?: unknown, auth = true, timeoutMs?: number) =>
+  request<T>(path, 'POST', body, auth, timeoutMs ?? REQUEST_TIMEOUT_MS);
+export const httpPatch = <T = unknown>(path: string, body?: unknown, auth = true, timeoutMs?: number) =>
+  request<T>(path, 'PATCH', body, auth, timeoutMs ?? REQUEST_TIMEOUT_MS);
+export const httpDelete = <T = unknown>(path: string, auth = true, timeoutMs?: number) =>
+  request<T>(path, 'DELETE', undefined, auth, timeoutMs ?? REQUEST_TIMEOUT_MS);
 
 /**
  * Multipart upload helper. `body` is forwarded as-is so fetch can set the
@@ -299,3 +400,84 @@ export const httpUpload = <T = unknown>(
   method: 'POST' | 'PATCH' = 'POST',
   auth = true,
 ) => request<T>(path, method, body, auth, UPLOAD_TIMEOUT_MS);
+
+/**
+ * Same contract as `httpUpload`, but reports upload progress and is backed by
+ * XMLHttpRequest because fetch has no upload-progress event.
+ *
+ * The request is deliberately NEVER retried: a half-uploaded photo may have
+ * already reached the server, and replaying the multipart body would double the
+ * bytes on an already-slow link. Callers surface a retry action instead.
+ */
+export function httpUploadWithProgress<T = unknown>(
+  path: string,
+  body: FormData,
+  onProgress?: (percent: number) => void,
+  method: 'POST' | 'PATCH' = 'POST',
+  auth = true,
+): Promise<ApiResponse<T>> {
+  const safePath = path.startsWith('/') ? path : `/${path}`;
+  const url = `${API_BASE_URL}${safePath}`;
+
+  return new Promise<ApiResponse<T>>((resolve, reject) => {
+    void (async () => {
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (auth) {
+        const token = await getAccessToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
+      }
+
+      const xhr = new XMLHttpRequest();
+      let settled = false;
+      const fail = (error: ApiError) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+
+      xhr.open(method, url);
+      // No Content-Type here: XHR must add its own multipart boundary.
+      for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
+      xhr.timeout = UPLOAD_TIMEOUT_MS;
+
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || event.total <= 0) return;
+        const percent = Math.min(100, Math.max(0, Math.round((event.loaded / event.total) * 100)));
+        onProgress?.(percent);
+      };
+
+      xhr.onload = () => {
+        if (settled) return;
+        let json: { success?: boolean; message?: string; data?: unknown; meta?: unknown } | null =
+          null;
+        try {
+          json = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+        } catch {
+          json = null;
+        }
+        if (json && json.success === false) {
+          fail(new ApiError(json.message ?? 'Request failed', xhr.status));
+          return;
+        }
+        if (xhr.status >= 400) {
+          fail(new ApiError(json?.message ?? `Request failed (${xhr.status})`, xhr.status));
+          return;
+        }
+        settled = true;
+        resolve({
+          status: xhr.status,
+          data: (json?.data ?? {}) as T,
+          meta: json?.meta as ApiResponse<T>['meta'],
+        });
+      };
+
+      xhr.onerror = () =>
+        fail(new ApiError('Network request failed. Check your connection.', undefined, 'network'));
+      xhr.ontimeout = () =>
+        fail(new ApiError('The upload timed out. Please try again.', undefined, 'timeout'));
+      xhr.onabort = () => fail(new ApiError('The upload was cancelled.', undefined, 'network'));
+
+      xhr.send(body);
+    })().catch((error) => reject(error));
+  });
+}

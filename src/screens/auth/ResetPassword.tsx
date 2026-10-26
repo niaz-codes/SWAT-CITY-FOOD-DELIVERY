@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   TextInput,
+  type TextInputInstance,
   View,
 } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
@@ -15,6 +16,7 @@ import { RootStackParamList } from '../../navigation/types';
 import { AppText } from '../../components/AppText';
 import { AppButton } from '../../components/AppButton';
 import { BrandLogo } from '../../components/BrandLogo';
+import { InlineBanner } from '../../components/InlineBanner';
 import { authApi } from '../../services/api';
 import { useThemeColors } from '../../theme';
 import { fonts } from '../../theme/typography';
@@ -26,67 +28,79 @@ type Props = NativeStackScreenProps<RootStackParamList, 'ResetPassword'>;
 
 type Stage = 'form' | 'submitting' | 'done';
 
+const OTP_LENGTH = 6;
+const RESEND_COOLDOWN_SECONDS = 60;
+
 /**
- * Password reset, opened from the `swatcity://reset-password#token=...` link in
- * the Brevo email. The token arrives in the URL fragment, which browsers and
- * mail clients do not send to the server, and which Expo Linking strips off the
- * `path` - so the link carries it twice:
- *
- *   swatcity://reset-password?token=abc123        <- used when the app is
- *                                                    already running (URL handler)
- *   swatcity://reset-password#token=abc123        <- canonical, used on cold
- *                                                    start and by the web page
- *
- * `token` from the route param wins; the fragment is re-read from the raw URL
- * as a fallback.
+ * Step 2 of the reset flow: confirm the 6-digit code mailed by the
+ * forgot-password endpoint and choose a new password. Both are sent together —
+ * the code proves mailbox ownership, the password is the new credential.
  */
 export function ResetPasswordScreen({ navigation, route }: Props) {
+  const { email } = route.params;
   const { colors } = useThemeColors();
-  const { success, error } = useToast();
+  const { success } = useToast();
 
-  const [token, setToken] = useState<string>(route.params?.token ?? '');
+  const [challengeToken, setChallengeToken] = useState(route.params.challengeToken);
+  const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(''));
+  const [focused, setFocused] = useState(0);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [stage, setStage] = useState<Stage>('form');
-  const [checking, setChecking] = useState(false);
-  const [tokenError, setTokenError] = useState<string | null>(null);
+  const [seconds, setSeconds] = useState(RESEND_COOLDOWN_SECONDS);
+  const [resending, setResending] = useState(false);
+  const [banner, setBanner] = useState<string | null>(null);
 
-  // Kept in a ref so the submit handler always sees the latest value without
-  // being re-created on every keystroke.
-  const tokenRef = useRef(token);
-  tokenRef.current = token;
+  const inputs = useRef<(TextInputInstance | null)[]>([]);
+  const otp = digits.join('');
 
-  // Validate the token as soon as we have one so the user learns about an
-  // expired link before typing a new password.
+  // Kept in refs so the submit handler always sees the latest values without
+  // being re-created on every keystroke. Refs are only written from effects
+  // (never during render); events fire after effects, so handlers always see
+  // the current values.
+  const tokenRef = useRef(challengeToken);
+  const otpRef = useRef(otp);
   useEffect(() => {
-    const value = tokenRef.current.trim();
-    if (!value || checking) return;
+    tokenRef.current = challengeToken;
+    otpRef.current = otp;
+  });
 
-    let cancelled = false;
-    (async () => {
-      try {
-        const result = await authApi.verifyResetToken(value);
-        if (cancelled) return;
-        if (!result.valid) {
-          setTokenError(result.message);
-        } else {
-          setTokenError(null);
-        }
-      } catch {
-        if (!cancelled) {
-          setTokenError('Could not verify this link. Request a new one.');
-        }
+  useEffect(() => {
+    inputs.current[0]?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (seconds <= 0) return;
+    const id = setTimeout(() => setSeconds((s) => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [seconds]);
+
+  const handleChange = (value: string, index: number) => {
+    const clean = value.replace(/\D/g, '');
+    if (banner) setBanner(null);
+    if (!clean) {
+      const next = [...digits];
+      next[index] = '';
+      setDigits(next);
+      if (index > 0) inputs.current[index - 1]?.focus();
+      return;
+    }
+    const chars = clean.split('');
+    const next = [...digits];
+    let cursor = index;
+    for (const ch of chars) {
+      if (cursor < OTP_LENGTH) {
+        next[cursor] = ch;
+        cursor++;
       }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [token, checking]);
+    }
+    setDigits(next);
+    if (cursor < OTP_LENGTH) inputs.current[cursor]?.focus();
+  };
 
   const validate = useCallback((): string | null => {
-    if (!tokenRef.current.trim()) return 'This reset link is missing its token.';
+    if (otpRef.current.length < OTP_LENGTH) return 'Enter the 6-digit code';
     if (password.length < 8) return 'Password must be at least 8 characters.';
     if (password !== confirm) return 'Passwords do not match.';
     return null;
@@ -95,24 +109,46 @@ export function ResetPasswordScreen({ navigation, route }: Props) {
   const handleSubmit = useCallback(async () => {
     const problem = validate();
     if (problem) {
-      error(problem);
+      setBanner(problem);
       return;
     }
 
     setStage('submitting');
     try {
-      const result = await authApi.resetPassword(tokenRef.current.trim(), password);
+      const result = await authApi.resetPassword(tokenRef.current.trim(), otpRef.current, password);
       setStage('done');
       success(result.message);
     } catch (err) {
       setStage('form');
-      error(apiErrorMessage(err, 'Could not update your password. Please try again.'));
+      setBanner(apiErrorMessage(err, 'Could not update your password. Please try again.'));
     }
-  }, [validate, password, success, error]);
+  }, [validate, password, success]);
 
-  const handleResend = useCallback(() => {
+  const handleResend = useCallback(async () => {
+    if (resending) return;
+    setResending(true);
+    try {
+      const fresh = await authApi.resendEmailOtp(tokenRef.current);
+      setChallengeToken(fresh.challengeToken);
+      setDigits(Array(OTP_LENGTH).fill(''));
+      setSeconds(RESEND_COOLDOWN_SECONDS);
+      inputs.current[0]?.focus();
+      success('A new code is on its way');
+    } catch (err) {
+      setBanner(apiErrorMessage(err, 'Could not resend the code. Please try again.'));
+    } finally {
+      setResending(false);
+    }
+  }, [resending, success]);
+
+  const handleBackToLogin = useCallback(() => {
     navigation.navigate('Login');
   }, [navigation]);
+
+  const canSubmit = useMemo(
+    () => otp.length === OTP_LENGTH && password.length >= 8,
+    [otp, password],
+  );
 
   if (stage === 'done') {
     return (
@@ -135,7 +171,7 @@ export function ResetPasswordScreen({ navigation, route }: Props) {
             </AppText>
             <AppButton
               label="Back to login"
-              onPress={handleResend}
+              onPress={handleBackToLogin}
               size="lg"
               style={styles.fullWidth}
             />
@@ -158,25 +194,90 @@ export function ResetPasswordScreen({ navigation, route }: Props) {
         >
           <Animated.View entering={FadeInUp.duration(450)} style={styles.brand}>
             <BrandLogo size={64} />
-            <AppText variant="h3" weight="extraBold" color={colors.textPrimary} center style={styles.title}>
+            <AppText
+              variant="h3"
+              weight="extraBold"
+              color={colors.textPrimary}
+              center
+              style={styles.title}
+            >
               Choose a new password
             </AppText>
             <AppText variant="body" color={colors.textMuted} center>
-              This link is single-use and expires shortly.
+              Enter the 6-digit code we emailed to
+            </AppText>
+            <AppText variant="bodyMedium" weight="bold" color={colors.textPrimary}>
+              {email}
             </AppText>
           </Animated.View>
 
           <Animated.View entering={FadeInUp.delay(120).duration(450)} style={styles.card}>
-            <View style={[styles.cardInner, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
-              {tokenError ? (
-                <View style={[styles.alert, { backgroundColor: colors.dangerSoft, borderColor: colors.danger }]}>
-                  <AppText variant="small" color={colors.danger}>
-                    {tokenError}
-                  </AppText>
-                </View>
-              ) : null}
+            <View
+              style={[
+                styles.cardInner,
+                { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+              ]}
+            >
+              <AppText variant="smallMedium" weight="bold" color={colors.textSecondary}>
+                Verification code
+              </AppText>
+              <View style={styles.boxes}>
+                {Array.from({ length: OTP_LENGTH }).map((_, i) => {
+                  const active = focused === i;
+                  return (
+                    <TextInput
+                      key={i}
+                      ref={(el) => {
+                        inputs.current[i] = el;
+                      }}
+                      value={digits[i]}
+                      onChangeText={(v) => handleChange(v, i)}
+                      onFocus={() => setFocused(i)}
+                      onBlur={() => setFocused(-1)}
+                      keyboardType="number-pad"
+                      maxLength={OTP_LENGTH}
+                      selectTextOnFocus
+                      caretHidden
+                      style={[
+                        styles.box,
+                        {
+                          backgroundColor: colors.surfaceMuted,
+                          color: colors.textPrimary,
+                          fontFamily: fonts.extraBold,
+                          borderColor: active ? colors.primary : colors.border,
+                          borderWidth: active ? 2 : 1,
+                        },
+                      ]}
+                    />
+                  );
+                })}
+              </View>
 
-              <AppText variant="h4" weight="bold" color={colors.textPrimary}>
+              <View style={styles.resendRow}>
+                <AppText variant="small" color={colors.textMuted}>
+                  Didn&apos;t receive the code?{' '}
+                </AppText>
+                {seconds > 0 ? (
+                  <AppText variant="smallMedium" weight="bold" color={colors.textSecondary}>
+                    Resend in {seconds}s
+                  </AppText>
+                ) : (
+                  <Pressable onPress={() => void handleResend()} disabled={resending}>
+                    <AppText variant="smallMedium" weight="bold" color={colors.primary}>
+                      {resending ? 'Sending…' : 'Resend code'}
+                    </AppText>
+                  </Pressable>
+                )}
+              </View>
+
+              {banner ? <InlineBanner kind="error" message={banner} /> : null}
+
+              <AppText
+                variant="h4"
+                weight="bold"
+                color={colors.textPrimary}
+                style={styles.newPassTitle}
+              >
                 New password
               </AppText>
 
@@ -207,11 +308,15 @@ export function ResetPasswordScreen({ navigation, route }: Props) {
                 label="Update password"
                 onPress={handleSubmit}
                 loading={stage === 'submitting'}
-                disabled={Boolean(tokenError)}
+                disabled={!canSubmit}
                 size="lg"
                 style={styles.cta}
               />
-              <Pressable onPress={handleResend} style={styles.link} disabled={stage === 'submitting'}>
+              <Pressable
+                onPress={handleBackToLogin}
+                style={styles.link}
+                disabled={stage === 'submitting'}
+              >
                 <AppText variant="smallMedium" color={colors.primary}>
                   Back to login
                 </AppText>
@@ -247,7 +352,12 @@ function PasswordField({
 
   return (
     <View style={styles.field}>
-      <AppText variant="smallMedium" weight="bold" color={colors.textSecondary} style={styles.fieldLabel}>
+      <AppText
+        variant="smallMedium"
+        weight="bold"
+        color={colors.textSecondary}
+        style={styles.fieldLabel}
+      >
         {label}
       </AppText>
       <View
@@ -287,7 +397,16 @@ const styles = StyleSheet.create({
   title: { marginTop: spacing.m },
   card: { width: '100%', maxWidth: 440, alignSelf: 'center' },
   cardInner: { borderRadius: 26, borderWidth: 1, padding: spacing.l, gap: spacing.sm },
-  alert: { borderRadius: radius.md, borderWidth: 1, padding: spacing.sm, marginBottom: spacing.xs },
+  boxes: { flexDirection: 'row', gap: spacing.s, marginTop: spacing.xs },
+  box: {
+    flex: 1,
+    height: 56,
+    borderRadius: radius.md,
+    fontSize: 22,
+    textAlign: 'center',
+  },
+  resendRow: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.xs },
+  newPassTitle: { marginTop: spacing.m },
   field: { gap: 6 },
   fieldLabel: { marginBottom: 2 },
   inputWrap: {

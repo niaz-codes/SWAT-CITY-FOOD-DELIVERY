@@ -1,10 +1,9 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
-  withDelay,
   Easing,
   FadeInUp,
 } from 'react-native-reanimated';
@@ -12,7 +11,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
-import { userHome } from '../navigation/AdminGuard';
+import { userHome } from '../navigation/roleHome';
+
 import { BrandLogo } from '../components/BrandLogo';
 import { AppText } from '../components/AppText';
 import { useAuth } from '../state/AuthContext';
@@ -73,8 +73,8 @@ export function SplashScreen({ navigation }: Props) {
 
       <Animated.View style={[styles.textWrap, textAnim, { bottom: insets.bottom + 56 }]}>
         <Animated.View entering={FadeInUp.delay(900).duration(500)}>
-          <AppText variant="h1" weight="extraBold" color="#FFFFFF" center>
-            Swat City
+          <AppText variant="h2" weight="extraBold" color="#FFFFFF" center>
+            Swat City Food Delivery
           </AppText>
         </Animated.View>
         <Animated.View entering={FadeInUp.delay(1100).duration(500)}>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -28,12 +28,16 @@ export function NotificationsScreen({ navigation }: Props) {
   const { colors } = useThemeColors();
   const insets = useSafeAreaInsets();
   const [items, setItems] = useState<AppNotification[] | null>(null);
+  const [seeded, setSeeded] = useState(false);
 
   const data = useAsyncData(() => notificationApi.get(), []);
 
-  useEffect(() => {
-    if (data.data) setItems((prev) => (prev === null ? data.data : prev));
-  }, [data.data]);
+  // Seed the locally-mutable list (read states are updated optimistically)
+  // once the first fetch lands. Done during render, not in an effect.
+  if (!seeded && data.data) {
+    setSeeded(true);
+    setItems(data.data);
+  }
 
   const unread = (items ?? []).filter((n) => !n.read).length;
 
@@ -67,7 +71,9 @@ export function NotificationsScreen({ navigation }: Props) {
             item={item}
             onPress={() =>
               !item.read &&
-              setItems((prev) => (prev ?? []).map((n) => (n.id === item.id ? { ...n, read: true } : n)))
+              setItems((prev) =>
+                (prev ?? []).map((n) => (n.id === item.id ? { ...n, read: true } : n)),
+              )
             }
           />
         )}
@@ -75,9 +81,17 @@ export function NotificationsScreen({ navigation }: Props) {
         ItemSeparatorComponent={() => <View style={{ height: spacing.s }} />}
         ListEmptyComponent={
           data.loading ? (
-            <EmptyState icon="notifications-outline" title="Loading…" message="Fetching your notifications." />
+            <EmptyState
+              icon="notifications-outline"
+              title="Loading…"
+              message="Fetching your notifications."
+            />
           ) : (
-            <EmptyState icon="notifications-off-outline" title="All caught up" message="You have no notifications right now." />
+            <EmptyState
+              icon="notifications-off-outline"
+              title="All caught up"
+              message="You have no notifications right now."
+            />
           )
         }
       />
@@ -93,7 +107,10 @@ function NotificationRow({ item, onPress }: { item: AppNotification; onPress: ()
       onPress={onPress}
       style={[
         styles.row,
-        { backgroundColor: item.read ? colors.surfaceAlt : colors.surfaceRaised, borderColor: colors.border },
+        {
+          backgroundColor: item.read ? colors.surfaceAlt : colors.surfaceRaised,
+          borderColor: colors.border,
+        },
       ]}
     >
       <View style={[styles.icon, { backgroundColor: colors[meta.soft as keyof ColorScheme] }]}>
@@ -101,7 +118,13 @@ function NotificationRow({ item, onPress }: { item: AppNotification; onPress: ()
       </View>
       <View style={styles.info}>
         <View style={styles.titleRow}>
-          <AppText variant="title" weight={item.read ? 'semiBold' : 'bold'} color={colors.textPrimary} numberOfLines={1} style={styles.title}>
+          <AppText
+            variant="title"
+            weight={item.read ? 'semiBold' : 'bold'}
+            color={colors.textPrimary}
+            numberOfLines={1}
+            style={styles.title}
+          >
             {item.title}
           </AppText>
           {!item.read && <View style={[styles.dot, { backgroundColor: colors.danger }]} />}
@@ -120,7 +143,14 @@ function NotificationRow({ item, onPress }: { item: AppNotification; onPress: ()
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   listContent: { padding: spacing.m },
-  row: { flexDirection: 'row', alignItems: 'center', gap: spacing.m, padding: spacing.m, borderRadius: 18, borderWidth: 1 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.m,
+    padding: spacing.m,
+    borderRadius: 18,
+    borderWidth: 1,
+  },
   icon: { width: 46, height: 46, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   info: { flex: 1, gap: 2 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },

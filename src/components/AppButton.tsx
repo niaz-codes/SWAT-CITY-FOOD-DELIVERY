@@ -43,7 +43,6 @@ export function AppButton({
   style,
   testID,
 }: Props) {
-  const { colors } = useThemeColors();
   const scale = useSharedValue(1);
 
   const palette = usePalette(variant);
@@ -63,7 +62,15 @@ export function AppButton({
   const isDisabled = disabled || loading;
 
   return (
-    <Animated.View style={[styles.wrap, animStyle, !fullWidth && styles.inline, { opacity: isDisabled ? 0.55 : 1 }, style]}>
+    <Animated.View
+      style={[
+        styles.wrap,
+        animStyle,
+        !fullWidth && styles.inline,
+        { opacity: isDisabled ? 0.55 : 1 },
+        style,
+      ]}
+    >
       <Pressable
         testID={testID}
         accessibilityRole="button"
@@ -74,7 +81,11 @@ export function AppButton({
         style={({ pressed: p }) => [
           styles.base,
           { height: HEIGHT[size], borderRadius: radius[size === 'lg' ? 'lg' : 'sm'] + 4 },
-          { backgroundColor: palette.bg, borderColor: palette.border, borderWidth: palette.border ? 1 : 0 },
+          {
+            backgroundColor: palette.bg,
+            borderColor: palette.border,
+            borderWidth: palette.border ? 1 : 0,
+          },
           p && !isDisabled && { backgroundColor: palette.pressedBg },
         ]}
       >
@@ -85,7 +96,11 @@ export function AppButton({
             {icon && iconPosition === 'left' && (
               <Ionicons name={icon} size={size === 'lg' ? 22 : 19} color={palette.text} />
             )}
-            <AppText variant={size === 'lg' ? 'title' : 'smallMedium'} weight="semiBold" color={palette.text}>
+            <AppText
+              variant={size === 'lg' ? 'title' : 'smallMedium'}
+              weight="semiBold"
+              color={palette.text}
+            >
               {label}
             </AppText>
             {icon && iconPosition === 'right' && (

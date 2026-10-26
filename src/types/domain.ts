@@ -211,6 +211,8 @@ export type RideRequest = {
   distanceKm: number;
   durationMin: number;
   fare: number;
+  /** What the rider actually earns — the server's riderPayout. */
+  payout: number;
   customerName: string;
   customerRating: number;
   vehicle: VehicleType;

@@ -1,10 +1,6 @@
 import React, { useEffect } from 'react';
 import { Pressable, StyleSheet, View, useWindowDimensions } from 'react-native';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppText } from './AppText';
@@ -32,7 +28,10 @@ export function TabBar({ items, activeKey, onChange, elevated }: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
 
-  const index = Math.max(0, items.findIndex((i) => i.key === activeKey));
+  const index = Math.max(
+    0,
+    items.findIndex((i) => i.key === activeKey),
+  );
   const indicator = useSharedValue(index);
 
   useEffect(() => {
@@ -62,9 +61,7 @@ export function TabBar({ items, activeKey, onChange, elevated }: Props) {
       <Animated.View
         style={[styles.indicator, indicatorStyle, { height: 3, backgroundColor: colors.primary }]}
       >
-        <View
-          style={[styles.indicatorInner, { backgroundColor: colors.primary }]}
-        />
+        <View style={[styles.indicatorInner, { backgroundColor: colors.primary }]} />
       </Animated.View>
       {items.map((item) => {
         const active = item.key === activeKey;
@@ -103,6 +100,7 @@ export function TabBar({ items, activeKey, onChange, elevated }: Props) {
             <AppText
               variant="microBold"
               color={active ? colors.primaryStrong : colors.tabBarInactive}
+              numberOfLines={1}
               style={styles.label}
             >
               {item.label}

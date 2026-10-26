@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { AppText } from './AppText';
 import { ArtTile } from './ArtTile';
@@ -8,6 +8,7 @@ import { useThemeColors } from '../theme';
 import { radius, spacing } from '../theme/spacing';
 import { RideFare } from '../types/domain';
 import { haptics } from '../hooks/useHaptics';
+import { usePressScale } from '../hooks/usePressScale';
 
 type Props = {
   ride: RideFare;
@@ -18,9 +19,7 @@ type Props = {
 
 export function RideCard({ ride, fare, selected, onSelect }: Props) {
   const { colors } = useThemeColors();
-  const scale = useSharedValue(1);
-
-  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  const { animStyle, pressIn, pressOut } = usePressScale(0.975, 18, 300);
 
   const gradient = selected
     ? (['#0E9488', '#0B7A71'] as [string, string])
@@ -29,12 +28,8 @@ export function RideCard({ ride, fare, selected, onSelect }: Props) {
   return (
     <Animated.View style={animStyle}>
       <Pressable
-        onPressIn={() => {
-          scale.value = withSpring(0.975, { damping: 18, stiffness: 300 });
-        }}
-        onPressOut={() => {
-          scale.value = withSpring(1, { damping: 18, stiffness: 300 });
-        }}
+        onPressIn={pressIn}
+        onPressOut={pressOut}
         onPress={() => {
           haptics.light();
           onSelect();
@@ -52,7 +47,13 @@ export function RideCard({ ride, fare, selected, onSelect }: Props) {
           <ArtTile gradient={gradient} emoji={undefined} size={54} rounded={16} />
           <View style={styles.rideIcon}>
             <Ionicons
-              name={(ride.icon === 'bicycle' ? 'bicycle' : ride.icon === 'bus' ? 'bus' : 'car') as keyof typeof Ionicons.glyphMap}
+              name={
+                (ride.icon === 'bicycle'
+                  ? 'bicycle'
+                  : ride.icon === 'bus'
+                    ? 'bus'
+                    : 'car') as keyof typeof Ionicons.glyphMap
+              }
               size={22}
               color="#FFFFFF"
             />
@@ -73,7 +74,9 @@ export function RideCard({ ride, fare, selected, onSelect }: Props) {
           <AppText variant="h4" weight="extraBold" color={colors.textPrimary}>
             Rs {fare}
           </AppText>
-          <View style={[styles.radio, { borderColor: selected ? colors.primary : colors.borderStrong }]}>
+          <View
+            style={[styles.radio, { borderColor: selected ? colors.primary : colors.borderStrong }]}
+          >
             {selected && <View style={[styles.dot, { backgroundColor: colors.primary }]} />}
           </View>
         </View>

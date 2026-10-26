@@ -61,7 +61,15 @@ export function ErrorState({
       <AppText variant="body" color={colors.textMuted} center style={styles.message}>
         {message}
       </AppText>
-      {onRetry && <AppButton label="Try again" onPress={onRetry} size="sm" variant="secondary" style={styles.action} />}
+      {onRetry && (
+        <AppButton
+          label="Try again"
+          onPress={onRetry}
+          size="sm"
+          variant="secondary"
+          style={styles.action}
+        />
+      )}
     </View>
   );
 }

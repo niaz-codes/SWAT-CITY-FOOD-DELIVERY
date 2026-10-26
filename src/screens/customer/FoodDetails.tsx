@@ -20,7 +20,8 @@ import { useThemeColors } from '../../theme';
 import { spacing } from '../../theme/spacing';
 import { formatCurrency } from '../../utils/format';
 import { haptics } from '../../hooks/useHaptics';
-import { POPULAR_ITEMS } from '../../services/api';
+import { foodApi } from '../../services/api';
+import { useAsyncData } from '../../hooks/useAsyncData';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'FoodDetails'>;
 
@@ -31,10 +32,9 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
   const { add, count, restaurantId } = useCart();
   const { success } = useToast();
   const [quantity, setQuantity] = useState(1);
+  const { data: popular } = useAsyncData(() => foodApi.getPopular(), []);
 
   const sameRestaurant = restaurantId === null || restaurantId === item.restaurantId;
-  const similar = POPULAR_ITEMS.filter((p) => p.id !== item.id && sameRestaurant && p.restaurantId === item.restaurantId).slice(0, 4);
-  const suggestions = similar.length > 0 ? similar : POPULAR_ITEMS.filter((p) => p.id !== item.id).slice(0, 4);
 
   const handleAdd = () => {
     haptics.success();
@@ -51,7 +51,12 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
         ListHeaderComponent={
           <View>
             <Animated.View entering={FadeInDown.duration(300)}>
-              <LinearGradient colors={item.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1.2 }} style={styles.hero}>
+              <LinearGradient
+                colors={item.gradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1.2 }}
+                style={styles.hero}
+              >
                 <View style={styles.heroRing} />
                 <View style={styles.disc}>
                   <AppText style={styles.discEmoji}>{item.emoji}</AppText>
@@ -59,13 +64,21 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
                 {item.popular && (
                   <View style={styles.popularBadge}>
                     <Ionicons name="flame" size={13} color="#FFFFFF" />
-                    <AppText variant="microBold" color="#FFFFFF">BESTSELLER</AppText>
+                    <AppText variant="microBold" color="#FFFFFF">
+                      BESTSELLER
+                    </AppText>
                   </View>
                 )}
               </LinearGradient>
             </Animated.View>
 
-            <Animated.View entering={FadeInUp.delay(80).duration(320)} style={[styles.body, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+            <Animated.View
+              entering={FadeInUp.delay(80).duration(320)}
+              style={[
+                styles.body,
+                { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+              ]}
+            >
               <AppText variant="h3" weight="extraBold" color={colors.textPrimary}>
                 {item.name}
               </AppText>
@@ -98,14 +111,16 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
             )}
 
             <SectionHeader title="You may also like" />
-            {suggestions.map((s) => (
-              <FoodCard
-                key={s.id}
-                item={s}
-                variant="row"
-                onPress={() => navigation.replace('FoodDetails', { item: s, restaurantName })}
-              />
-            ))}
+            {(popular?.slice(0, 6) ?? [])
+              .filter((s) => s.id !== item.id)
+              .map((s) => (
+                <FoodCard
+                  key={s.id}
+                  item={s}
+                  variant="row"
+                  onPress={() => navigation.replace('FoodDetails', { item: s, restaurantName })}
+                />
+              ))}
             <Divider spacing={spacing.l} />
           </View>
         }
@@ -113,22 +128,42 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
         showsVerticalScrollIndicator={false}
       />
 
-      <Animated.View entering={FadeInUp.duration(280)} style={[styles.footer, { paddingBottom: Math.max(insets.bottom, spacing.m), backgroundColor: colors.surface }]}>
+      <Animated.View
+        entering={FadeInUp.duration(280)}
+        style={[
+          styles.footer,
+          { paddingBottom: Math.max(insets.bottom, spacing.m), backgroundColor: colors.surface },
+        ]}
+      >
         <View style={[styles.footerInner, { backgroundColor: colors.surface }]}>
           <QuantityStepper quantity={quantity} onChange={setQuantity} min={1} />
           <Pressable
             onPress={handleAdd}
             disabled={!sameRestaurant && count > 0}
-            style={[styles.addBtn, { backgroundColor: colors.primary }, !sameRestaurant && count > 0 && { opacity: 0.7 }]}
+            style={[
+              styles.addBtn,
+              { backgroundColor: colors.primary },
+              !sameRestaurant && count > 0 && { opacity: 0.7 },
+            ]}
           >
             <View style={styles.addCartRow}>
               <Ionicons name="cart" size={20} color={colors.onPrimary} />
               {!sameRestaurant && count > 0 ? (
-                <AppText variant="title" weight="bold" color={colors.onPrimary} style={styles.addText}>
+                <AppText
+                  variant="title"
+                  weight="bold"
+                  color={colors.onPrimary}
+                  style={styles.addText}
+                >
                   Clear cart first
                 </AppText>
               ) : (
-                <AppText variant="title" weight="bold" color={colors.onPrimary} style={styles.addText}>
+                <AppText
+                  variant="title"
+                  weight="bold"
+                  color={colors.onPrimary}
+                  style={styles.addText}
+                >
                   Add {quantity > 1 ? `${quantity} · ` : ''}
                   {formatCurrency(item.price * quantity)}
                 </AppText>
@@ -139,7 +174,12 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
       </Animated.View>
 
       <View style={[styles.header, { paddingTop: insets.top }]}>
-        <AppHeader transparent onBack={() => navigation.goBack()} backColor={colors.onPrimary} containerStyle={{ backgroundColor: 'transparent' }} />
+        <AppHeader
+          transparent
+          onBack={() => navigation.goBack()}
+          backColor={colors.onPrimary}
+          containerStyle={{ backgroundColor: 'transparent' }}
+        />
       </View>
     </View>
   );
@@ -157,7 +197,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
   },
-  heroRing: { position: 'absolute', width: 300, height: 300, borderRadius: 150, top: -120, right: -100, backgroundColor: 'rgba(255,255,255,0.12)' },
+  heroRing: {
+    position: 'absolute',
+    width: 300,
+    height: 300,
+    borderRadius: 150,
+    top: -120,
+    right: -100,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
   disc: {
     width: 110,
     height: 110,
@@ -166,7 +214,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  discEmoji: { fontSize: 52, textShadowColor: 'rgba(0,0,0,0.25)', textShadowOffset: { width: 0, height: 3 }, textShadowRadius: 6 },
+  discEmoji: {
+    fontSize: 52,
+    textShadowColor: 'rgba(0,0,0,0.25)',
+    textShadowOffset: { width: 0, height: 3 },
+    textShadowRadius: 6,
+  },
   popularBadge: {
     position: 'absolute',
     top: spacing.m,

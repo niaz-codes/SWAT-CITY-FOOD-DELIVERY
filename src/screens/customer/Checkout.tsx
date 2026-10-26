@@ -27,37 +27,68 @@ import {
   type OrderQuote,
 } from '../../services/api';
 import { apiErrorMessage } from '../../services/client';
-import { Address } from '../../types/domain';
 import { useAsyncData } from '../../hooks/useAsyncData';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Checkout'>;
 
 type MethodKey = CheckoutPaymentMethod;
 
-const METHODS: Array<{
+/**
+ * Official brand colours for each wallet. Used to render the gateway's own
+ * identity in the payment list. Drop the press kit logo into
+ * `src/assets/payments/` and swap `short` for an <Image> when you have licensed
+ * artwork — the colours below keep the row on-brand until then.
+ */
+const BRAND: Record<'easypaisa' | 'jazzcash', { bg: string; fg: string; short: string }> = {
+  easypaisa: { bg: '#3BAE49', fg: '#FFFFFF', short: 'EP' },
+  jazzcash: { bg: '#EE1C25', fg: '#FFFFFF', short: 'JC' },
+};
+
+const METHODS: {
   key: MethodKey;
   label: string;
   note: string;
-  icon: keyof typeof Ionicons.glyphMap;
   /** Field name used to match the backend's `methods` availability list. */
-  gateway: 'easypaisa' | 'jazzcash' | null;
-}> = [
-  { key: 'cash', label: 'Cash on delivery', note: 'Pay the rider at your door', icon: 'cash-outline', gateway: null },
+  gateway: 'easypaisa' | 'jazzcash';
+  brand: (typeof BRAND)['easypaisa'];
+}[] = [
   {
     key: 'easypaisa',
     label: 'Easypaisa',
     note: 'Pay from your Easypaisa mobile account',
-    icon: 'phone-portrait-outline',
     gateway: 'easypaisa',
+    brand: BRAND.easypaisa,
   },
   {
     key: 'jazzcash',
     label: 'JazzCash',
     note: 'Pay securely on the JazzCash page',
-    icon: 'flash-outline',
     gateway: 'jazzcash',
+    brand: BRAND.jazzcash,
   },
 ];
+
+type VerificationResult = Awaited<ReturnType<typeof paymentApi.verify>>;
+
+/**
+ * Easypaisa MA debits the wallet on the payer's own handset, so the debit can
+ * legitimately still be in flight when we come back to the app — there is no
+ * browser round-trip to wait on. Poll the gateway a few times before saying
+ * anything. Only `paid` or `failed` ends the wait; anything else is still
+ * pending and must not be reported as a success.
+ */
+async function verifyWithRetries(
+  orderId: string,
+  attempts = 4,
+  delayMs = 2500,
+): Promise<VerificationResult> {
+  let result = await paymentApi.verify(orderId);
+  for (let i = 1; i < attempts && result.status === 'pending'; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    result = await paymentApi.verify(orderId);
+  }
+  return result;
+}
 
 export function CheckoutScreen({ navigation }: Props) {
   const { colors } = useThemeColors();
@@ -68,7 +99,7 @@ export function CheckoutScreen({ navigation }: Props) {
 
   const addresses = useAsyncData(() => addressApi.getSaved(), []);
   const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
-  const [method, setMethod] = useState<MethodKey>('cash');
+  const [method, setMethod] = useState<MethodKey>('easypaisa');
   const [phone, setPhone] = useState('');
 
   /**
@@ -120,35 +151,55 @@ export function CheckoutScreen({ navigation }: Props) {
 
   const enabled = useCallback(
     (candidate: MethodKey) => {
-      if (candidate === 'cash') return true;
       const meta = METHODS.find((m) => m.key === candidate);
-      if (!meta?.gateway) return true;
+      if (!meta) return false;
       const entry = gateways.find((g) => g.method === meta.gateway);
-      // While availability is unknown, leave the option enabled and let the
-      // server be the authority.
+      // While availability is still unknown, leave the option enabled and let
+      // the server be the authority on submit.
       if (!entry) return true;
       return entry.enabled;
     },
     [gateways],
   );
 
-  const unavailableReason = useCallback(
-    (candidate: MethodKey) => {
-      const meta = METHODS.find((m) => m.key === candidate);
-      if (!meta?.gateway) return undefined;
-      return gateways.find((g) => g.method === meta.gateway && !g.enabled)?.reason;
-    },
-    [gateways],
-  );
+  /**
+   * Only methods the backend reports as fully configured are offered.
+   *
+   * Until `/payments/methods` answers we show nothing rather than guess: a wallet
+   * that turns out to be unconfigured would otherwise draw the customer through
+   * the whole checkout and then fail at submit.
+   */
+  const availabilityLoaded = gateways.length > 0;
+  const visibleMethods = availabilityLoaded ? METHODS.filter((m) => enabled(m.key)) : [];
+  const noGatewayAvailable = availabilityLoaded && visibleMethods.length === 0;
+
+  /** Why the section is empty, shown in place of the method rows. */
+  const emptyMessage = noGatewayAvailable
+    ? 'No payment method is available right now. Please try again later.'
+    : 'Loading payment methods…';
+
+  /**
+   * Keep a valid selection as availability arrives. Adjusted during render
+   * (React's "adjust state when props change" pattern) so the default never
+   * stays on a wallet the server reports as unconfigured.
+   */
+  if (!enabled(method)) {
+    const first = METHODS.find((m) => enabled(m.key));
+    if (first && first.key !== method) setMethod(first.key);
+  }
 
   const restaurant = quote?.restaurant;
   const total = quote?.total ?? 0;
-  const needsPhone = method === 'easypaisa';
+  // Both integrated gateways settle against a mobile wallet account, so the
+  // payer must always supply the number the debit will be taken from. Easypaisa
+  // MA uses it as `mobileAccountNo`, JazzCash MPAY as the billed MSISDN.
+  const needsPhone = true;
   const phoneValid = /^(\+?92|0)?3\d{9}$/.test(phone.replace(/[\s-]/g, ''));
   const canSubmit =
     Boolean(deliveryAddress) &&
     Boolean(quote) &&
     !quoteError &&
+    !noGatewayAvailable &&
     enabled(method) &&
     (!needsPhone || phoneValid);
 
@@ -195,22 +246,18 @@ export function CheckoutScreen({ navigation }: Props) {
 
       const orderId = result.order.id;
 
-      // Cash on delivery needs no gateway round-trip.
-      if (!result.handoff) {
-        clear();
-        success('Order placed');
-        navigation.replace('OrderTracking', { orderId });
-        return;
+      // JazzCash is a hosted MPAY checkout, so the payer leaves the app and we
+      // wait for them to come back. Easypaisa MA has no redirect at all, so
+      // `handoff` is null and there is simply nothing to open.
+      if (result.handoff?.url) {
+        await WebBrowser.openBrowserAsync(result.handoff.url);
       }
 
-      // Online wallet: hand the payer to the gateway in a browser session.
-      // `redirect` goes straight to the gateway; `form` is our own page that
-      // auto-submits the signed POST on the gateway's behalf.
-      await WebBrowser.openBrowserAsync(result.handoff.url);
-
-      // The gateway redirect comes back through the app; verification below is
-      // the authoritative check, so the order is only cleared once money moved.
-      const verification = await paymentApi.verify(orderId);
+      // Nothing above proves money moved — not the handoff, not the redirect.
+      // Only the server, asking the gateway, may clear the cart. This also covers
+      // Easypaisa, whose null handoff used to be mistaken for a cash order and
+      // reported as placed without ever checking the wallet.
+      const verification = await verifyWithRetries(orderId);
 
       if (verification.status === 'paid') {
         clear();
@@ -232,7 +279,11 @@ export function CheckoutScreen({ navigation }: Props) {
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
       <AppHeader title="Checkout" onBack={() => navigation.goBack()} elevated />
 
-      <ScrollView style={styles.flex} contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={styles.body}
+        showsVerticalScrollIndicator={false}
+      >
         <SectionLabel icon="location-outline" label="Deliver to" />
         {addresses.loading ? (
           <AppText variant="body" color={colors.textMuted}>
@@ -250,7 +301,12 @@ export function CheckoutScreen({ navigation }: Props) {
         )}
 
         <SectionLabel icon="time-outline" label="Delivery now" />
-        <View style={[styles.etaRow, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+        <View
+          style={[
+            styles.etaRow,
+            { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+          ]}
+        >
           <View style={[styles.etaIcon, { backgroundColor: colors.primarySoft }]}>
             <Ionicons name="bicycle" size={22} color={colors.primary} />
           </View>
@@ -265,43 +321,53 @@ export function CheckoutScreen({ navigation }: Props) {
         </View>
 
         <SectionLabel icon="wallet-outline" label="Payment method" />
-        <View style={[styles.paymentCard, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
-          {METHODS.map((p, i) => {
+        <View
+          style={[
+            styles.paymentCard,
+            { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+          ]}
+        >
+          {visibleMethods.length === 0 && (
+            <AppText variant="small" color={colors.textMuted} style={styles.emptyMessage}>
+              {emptyMessage}
+            </AppText>
+          )}
+          {visibleMethods.map((p, i) => {
             const active = method === p.key;
-            const isEnabled = enabled(p.key);
-            const reason = unavailableReason(p.key);
             return (
               <View key={p.key}>
                 <Pressable
-                  disabled={!isEnabled}
                   onPress={() => {
                     haptics.light();
                     setMethod(p.key);
                   }}
-                  style={[styles.paymentRow, !isEnabled && styles.paymentRowDisabled]}
+                  style={styles.paymentRow}
                 >
-                  <View
-                    style={[styles.payIcon, { backgroundColor: active ? colors.primarySoft : colors.surfaceMuted }]}
-                  >
-                    <Ionicons
-                      name={p.icon}
-                      size={20}
-                      color={active ? colors.primary : isEnabled ? colors.textSecondary : colors.textMuted}
-                    />
+                  <View style={[styles.payIcon, { backgroundColor: p.brand.bg }]}>
+                    <AppText variant="microBold" color={p.brand.fg}>
+                      {p.brand.short}
+                    </AppText>
                   </View>
                   <View style={styles.payInfo}>
-                    <AppText variant="title" weight="bold" color={isEnabled ? colors.textPrimary : colors.textMuted}>
+                    <AppText variant="title" weight="bold" color={colors.textPrimary}>
                       {p.label}
                     </AppText>
                     <AppText variant="small" color={colors.textMuted}>
-                      {isEnabled ? p.note : (reason ?? 'Unavailable right now')}
+                      {p.note}
                     </AppText>
                   </View>
-                  <View style={[styles.radio, { borderColor: active ? colors.primary : colors.borderStrong }]}>
-                    {active && <View style={[styles.radioDot, { backgroundColor: colors.primary }]} />}
+                  <View
+                    style={[
+                      styles.radio,
+                      { borderColor: active ? colors.primary : colors.borderStrong },
+                    ]}
+                  >
+                    {active && (
+                      <View style={[styles.radioDot, { backgroundColor: colors.primary }]} />
+                    )}
                   </View>
                 </Pressable>
-                {i < METHODS.length - 1 && <Divider spacing={spacing.s} />}
+                {i < visibleMethods.length - 1 && <Divider spacing={spacing.s} />}
               </View>
             );
           })}
@@ -340,7 +406,12 @@ export function CheckoutScreen({ navigation }: Props) {
         )}
 
         <SectionLabel icon="receipt-outline" label="Bill summary" />
-        <View style={[styles.summary, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+        <View
+          style={[
+            styles.summary,
+            { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+          ]}
+        >
           {quoteError ? (
             <AppText variant="small" color={colors.danger}>
               {quoteError}
@@ -351,14 +422,21 @@ export function CheckoutScreen({ navigation }: Props) {
             </AppText>
           ) : (
             <>
-              <Row label={`Items (${quote.itemCount || count})`} value={formatCurrency(quote.subtotal)} />
+              <Row
+                label={`Items (${quote.itemCount || count})`}
+                value={formatCurrency(quote.subtotal)}
+              />
               <Row
                 label="Delivery fee"
                 value={quote.deliveryFee === 0 ? 'FREE' : formatCurrency(quote.deliveryFee)}
                 valueColor={quote.deliveryFee === 0 ? colors.success : undefined}
               />
               {quote.discount > 0 && (
-                <Row label="Discount" value={`- ${formatCurrency(quote.discount)}`} valueColor={colors.success} />
+                <Row
+                  label="Discount"
+                  value={`- ${formatCurrency(quote.discount)}`}
+                  valueColor={colors.success}
+                />
               )}
               <Row label="Service fee" value={formatCurrency(quote.platformFee)} />
               <Divider spacing={spacing.sm} />
@@ -377,22 +455,21 @@ export function CheckoutScreen({ navigation }: Props) {
 
       <Animated.View
         entering={FadeInUp.duration(280)}
-        style={[styles.footer, { paddingBottom: Math.max(insets.bottom, spacing.m), backgroundColor: colors.surface }]}
+        style={[
+          styles.footer,
+          { paddingBottom: Math.max(insets.bottom, spacing.m), backgroundColor: colors.surface },
+        ]}
       >
         <AppButton
-          label={
-            quote
-              ? `${method === 'cash' ? 'Place order' : 'Pay'} · ${formatCurrency(total)}`
-              : 'Preparing your bill…'
-          }
+          label={quote ? `Pay · ${formatCurrency(total)}` : 'Preparing your bill…'}
           onPress={placeOrder}
           size="lg"
           loading={placing}
           disabled={!canSubmit}
         />
         <AppText variant="micro" color={colors.textMuted} center style={styles.footerNote}>
-          {method === 'cash'
-            ? 'Pay in cash when your order arrives. By placing this order you agree to Swat City’s delivery terms.'
+          {noGatewayAvailable
+            ? 'No payment method is available right now. Please try again later.'
             : 'You will be taken to the payment page. Your order is confirmed once payment succeeds.'}
         </AppText>
       </Animated.View>
@@ -445,14 +522,33 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: spacing.m,
   },
-  etaIcon: { width: 46, height: 46, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  etaIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   etaInfo: { flex: 1 },
   paymentCard: { borderRadius: 18, borderWidth: 1, padding: spacing.sm },
   paymentRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.m, padding: spacing.sm },
-  paymentRowDisabled: { opacity: 0.55 },
-  payIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  emptyMessage: { paddingVertical: spacing.s },
+  payIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   payInfo: { flex: 1 },
-  radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  radio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   radioDot: { width: 11, height: 11, borderRadius: 6 },
   phoneBlock: { marginTop: spacing.m, gap: spacing.xs },
   phoneInput: {

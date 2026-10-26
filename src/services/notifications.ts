@@ -35,7 +35,7 @@ import type * as NotificationsNS from 'expo-notifications';
  *      release builds - loads the module normally.
  *
  * Tokens are Expo Push Service tokens, delivered by the backend over the Expo
- * Push API; FCM tokens already in the database keep going through firebase-admin.
+ * Push API (the backend talks to no push provider directly).
  *
  * Navigation from a tap is deliberately NOT handled here. `RootNavigator` passes
  * its own handler so routing stays next to the routes it targets.
@@ -166,9 +166,8 @@ export type AppNotificationPayload = {
  * EXPO_PUBLIC_EAS_PROJECT_ID env var, and is inlined by Metro at build time.
  */
 function resolveProjectId(): string | undefined {
-  const fromExtra = (
-    Constants.expoConfig?.extra?.eas as { projectId?: string } | undefined
-  )?.projectId;
+  const fromExtra = (Constants.expoConfig?.extra?.eas as { projectId?: string } | undefined)
+    ?.projectId;
   const fromEnv = process.env.EXPO_PUBLIC_EAS_PROJECT_ID;
   return fromExtra || fromEnv || undefined;
 }
@@ -187,8 +186,15 @@ function toPayload(
 
   const payload: AppNotificationPayload = {
     notificationId: str(data.notificationId) ?? str(data.notification_id),
-    kind: str(data.kind) ?? str(data.type),
-    targetId: str(data.targetId) ?? str(data.target_id),
+    // `event` is the fine-grained routing hint the backend sends
+    // (order_placed, rider_assigned, ride_accepted, ...). Fall back to the
+    // coarse `kind`/`type` for older payload shapes.
+    kind: str(data.event) ?? str(data.kind) ?? str(data.type),
+    // The backend names the deep-link target `refId`; legacy FCM payloads used
+    // `targetId`/`target_id`. Accept all three so a tap never silently loses
+    // the order/ride it points at.
+    targetId:
+      str(data.targetId) ?? str(data.target_id) ?? str(data.refId) ?? str(data.ref_id),
     title: str(data.title),
     body: str(data.body),
   };
@@ -227,7 +233,7 @@ async function ensureAndroidPermission(): Promise<boolean> {
 
   const result = await PermissionsAndroid.request(permission, {
     title: 'Allow notifications',
-    message: 'Swat City uses notifications for order and ride updates.',
+    message: 'Swat City Food Delivery uses notifications for order and ride updates.',
     buttonPositive: 'Allow',
     buttonNegative: 'Not now',
   });
@@ -277,8 +283,7 @@ export async function getPushToken(): Promise<string | null> {
 
   try {
     const status = await readPermissionState();
-    const granted =
-      status === N.PermissionStatus.GRANTED || (await ensureAndroidPermission());
+    const granted = status === N.PermissionStatus.GRANTED || (await ensureAndroidPermission());
     if (!granted) return null;
 
     await ensureAndroidChannel();
@@ -431,7 +436,7 @@ export function openNotificationSettings(): Promise<void> {
 
   Alert.alert(
     'Notifications are off',
-    'Enable notifications for Swat City in your device settings to receive order and ride updates.',
+    'Enable notifications for Swat City Food Delivery in your device settings to receive order and ride updates.',
     [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Open settings', onPress: () => void Linking.openSettings() },
@@ -447,7 +452,10 @@ export function openNotificationSettings(): Promise<void> {
  * because expo-notifications reports it as undetermined until the system prompt
  * has run once.
  */
-export function usePushPermissionState(): { granted: boolean | null; request: () => Promise<boolean> } {
+export function usePushPermissionState(): {
+  granted: boolean | null;
+  request: () => Promise<boolean>;
+} {
   const [granted, setGranted] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -460,7 +468,9 @@ export function usePushPermissionState(): { granted: boolean | null; request: ()
             if (!cancelled) setGranted(true);
             return;
           }
-          const ok = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+          const ok = await PermissionsAndroid.check(
+            PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+          );
           if (!cancelled) setGranted(ok);
           return;
         }

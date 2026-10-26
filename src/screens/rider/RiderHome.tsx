@@ -12,8 +12,13 @@ import { Badge } from '../../components/Badge';
 import { SectionHeader } from '../../components/SectionHeader';
 import { Divider } from '../../components/Divider';
 import { EmptyState } from '../../components/EmptyState';
-import { riderApi, RIDER_PROFILE } from '../../services/api';
+import { riderFeedApi, jobApi } from '../../services/api';
+import { riderApi as liveRiderApi } from '../../services/riderApi';
+import { useRiderLocation } from '../../state/RiderLocationProvider';
+import { useToast } from '../../state/ToastProvider';
+import { apiErrorMessage } from '../../services/client';
 import { useAsyncData } from '../../hooks/useAsyncData';
+import { useAuth } from '../../state/AuthContext';
 import { useThemeColors } from '../../theme';
 import { spacing } from '../../theme/spacing';
 import { formatCurrency, formatDuration } from '../../utils/format';
@@ -22,14 +27,62 @@ import { haptics } from '../../hooks/useHaptics';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
-export function RiderHomeScreen({ onGoToRequests, onGoToProfile }: { onGoToRequests?: () => void; onGoToProfile?: () => void }) {
+export function RiderHomeScreen({
+  onGoToRequests,
+  onGoToProfile,
+}: {
+  onGoToRequests?: () => void;
+  onGoToProfile?: () => void;
+}) {
   const { colors } = useThemeColors();
+  const { user } = useAuth();
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
-  const [online, setOnline] = useState(true);
+  const { profile, refreshProfile } = useRiderLocation();
+  const { success, error } = useToast();
+  const [toggling, setToggling] = useState(false);
 
-  const earnings = useAsyncData(() => riderApi.getEarnings(), []);
-  const feed = useAsyncData(() => riderApi.getFeed(), []);
+  // Status is read from the server profile, never from a local toggle, so the
+  // home pill can never disagree with what the backend will accept.
+  const online = profile?.status === 'online' || profile?.status === 'busy';
+  const approved = profile?.approvalStatus === 'approved';
+
+  const toggleOnline = async () => {
+    if (!approved || toggling) return;
+    setToggling(true);
+    haptics.medium();
+    const next = !online;
+    try {
+      await liveRiderApi.setOnline(next);
+      await refreshProfile();
+      success(next ? 'You are online. Now sharing your location.' : 'You are offline.');
+    } catch (err) {
+      error(apiErrorMessage(err, 'Could not change your status'));
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  const earnings = useAsyncData(() => riderFeedApi.getEarnings(), []);
+  const feed = useAsyncData(() => riderFeedApi.getFeed(), []);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
+
+  /** Accepts a food order from the pickup pool and opens its delivery leg. */
+  const acceptJob = async (item: DeliveryFeedItem) => {
+    if (acceptingId) return;
+    setAcceptingId(item.id);
+    try {
+      haptics.success();
+      await jobApi.acceptFood(item.id);
+      success('Order accepted — heading to pickup');
+      navigation.navigate('RiderFoodDelivery', { orderId: item.id });
+    } catch (err) {
+      error(apiErrorMessage(err, 'Could not accept this order. It may already be taken.'));
+      void feed.refetch();
+    } finally {
+      setAcceptingId(null);
+    }
+  };
 
   const period = earnings.data?.period;
   const days = earnings.data?.days ?? [];
@@ -37,29 +90,57 @@ export function RiderHomeScreen({ onGoToRequests, onGoToProfile }: { onGoToReque
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
-      <ScrollView contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + spacing.xl }]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + spacing.xl }]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={[styles.header, { paddingTop: insets.top + spacing.s }]}>
           <View style={styles.headerRow}>
             <View style={styles.greeting}>
-              <AppText variant="caption" color={colors.textMuted}>SWAT CITY · PARTNER</AppText>
+              <AppText variant="caption" color={colors.textMuted}>
+                SWAT CITY FOOD DELIVERY · PARTNER
+              </AppText>
               <AppText variant="h3" weight="extraBold" color={colors.textPrimary}>
-                {online ? `On the road, ${RIDER_PROFILE.name.split(' ')[0]}` : `Hello, ${RIDER_PROFILE.name.split(' ')[0]}`}
+                {online
+                  ? `On the road, ${user?.name?.split(' ')[0] ?? 'Partner'}`
+                  : `Hello, ${user?.name?.split(' ')[0] ?? 'Partner'}`}
               </AppText>
             </View>
-            <Pressable onPress={() => (onGoToProfile ? onGoToProfile() : haptics.light())} hitSlop={8}>
-              <Avatar name={RIDER_PROFILE.name} gradient={RIDER_PROFILE.avatarGradient} size={46} />
+            <Pressable
+              onPress={() => (onGoToProfile ? onGoToProfile() : haptics.light())}
+              hitSlop={8}
+            >
+              <Avatar
+                name={user?.name ?? 'Partner'}
+                gradient={user?.avatarGradient ?? ['#0E9488', '#0E3F3A']}
+                size={46}
+              />
             </Pressable>
           </View>
 
           <Pressable
-            onPress={() => {
-              haptics.medium();
-              setOnline((v) => !v);
-            }}
-            style={[styles.onlinePill, { borderColor: colors.border, backgroundColor: colors.surfaceRaised }]}
+            onPress={toggleOnline}
+            disabled={!approved || toggling}
+            style={[
+              styles.onlinePill,
+              {
+                borderColor: colors.border,
+                backgroundColor: colors.surfaceRaised,
+                opacity: approved ? 1 : 0.6,
+              },
+            ]}
           >
-            <View style={[styles.onlineDot, { backgroundColor: online ? colors.success : colors.textMuted }]} />
-            <AppText variant="smallMedium" weight="bold" color={online ? colors.success : colors.textMuted}>
+            <View
+              style={[
+                styles.onlineDot,
+                { backgroundColor: online ? colors.success : colors.textMuted },
+              ]}
+            />
+            <AppText
+              variant="smallMedium"
+              weight="bold"
+              color={online ? colors.success : colors.textMuted}
+            >
               {online ? 'Online · getting requests' : 'Offline · tap to go online'}
             </AppText>
             <SwitchGlyph on={online} />
@@ -73,11 +154,15 @@ export function RiderHomeScreen({ onGoToRequests, onGoToProfile }: { onGoToReque
           style={styles.earningsCard}
         >
           <View style={styles.earningsTop}>
-            <AppText variant="caption" color="rgba(255,255,255,0.85)" uppercase>Latest earnings</AppText>
+            <AppText variant="caption" color="rgba(255,255,255,0.85)" uppercase>
+              Latest earnings
+            </AppText>
             <Badge label={period?.label ?? 'This week'} tone="primary" />
           </View>
           {earnings.loading && earnings.data == null ? (
-            <AppText variant="display" weight="extraBold" color="#FFFFFF">Rs …</AppText>
+            <AppText variant="display" weight="extraBold" color="#FFFFFF">
+              Rs …
+            </AppText>
           ) : (
             <AppText variant="display" weight="extraBold" color="#FFFFFF">
               {formatCurrency(period?.amount ?? 0)}
@@ -93,9 +178,16 @@ export function RiderHomeScreen({ onGoToRequests, onGoToProfile }: { onGoToReque
             {days.map((d) => (
               <View key={d.day} style={styles.barCol}>
                 <View style={styles.barTrack}>
-                  <View style={[styles.barFill, { height: `${Math.max(10, (d.amount / maxDay) * 100)}%` }]} />
+                  <View
+                    style={[
+                      styles.barFill,
+                      { height: `${Math.max(10, (d.amount / maxDay) * 100)}%` },
+                    ]}
+                  />
                 </View>
-                <AppText variant="micro" color="rgba(255,255,255,0.85)">{d.day}</AppText>
+                <AppText variant="micro" color="rgba(255,255,255,0.85)">
+                  {d.day}
+                </AppText>
               </View>
             ))}
           </View>
@@ -110,17 +202,36 @@ export function RiderHomeScreen({ onGoToRequests, onGoToProfile }: { onGoToReque
 
         {online ? (
           <>
-            <SectionHeader title="Requests near you" subtitle="Fresh jobs in Mingora & Saidu" actionLabel={onGoToRequests ? 'View all' : undefined} onAction={onGoToRequests} />
+            <SectionHeader
+              title="Requests near you"
+              subtitle="Fresh jobs in Mingora & Saidu"
+              actionLabel={onGoToRequests ? 'View all' : undefined}
+              onAction={onGoToRequests}
+            />
             <View style={styles.feed}>
               {feed.loading && feed.data == null ? (
-                <EmptyState icon="pulse-outline" title="Scanning…" message="Looking for deliveries nearby." compact />
+                <EmptyState
+                  icon="pulse-outline"
+                  title="Scanning…"
+                  message="Looking for deliveries nearby."
+                  compact
+                />
               ) : (feed.data ?? []).length === 0 ? (
-                <EmptyState icon="map-outline" title="No requests right now" message="New jobs appear when customers order." compact />
+                <EmptyState
+                  icon="map-outline"
+                  title="No requests right now"
+                  message="New jobs appear when customers order."
+                  compact
+                />
               ) : (
                 (feed.data ?? []).slice(0, 3).map((item, i) => (
                   <React.Fragment key={item.id}>
                     {i > 0 && <Divider spacing={0} />}
-                    <FeedRow item={item} onAccept={() => navigation.navigate('RiderActiveDelivery', { primaryRequest: true })} />
+                    <FeedRow
+                      item={item}
+                      accepting={acceptingId === item.id}
+                      onAccept={() => void acceptJob(item)}
+                    />
                   </React.Fragment>
                 ))
               )}
@@ -129,7 +240,9 @@ export function RiderHomeScreen({ onGoToRequests, onGoToProfile }: { onGoToReque
         ) : (
           <View style={[styles.offlineCard, { backgroundColor: colors.surfaceMuted }]}>
             <Ionicons name="moon-outline" size={22} color={colors.textSecondary} />
-            <AppText variant="title" weight="semiBold" color={colors.textPrimary}>You're offline</AppText>
+            <AppText variant="title" weight="semiBold" color={colors.textPrimary}>
+              You&#39;re offline
+            </AppText>
             <AppText variant="small" color={colors.textSecondary} style={styles.offlineText}>
               Go online to receive food deliveries and ride requests from customers nearby.
             </AppText>
@@ -143,7 +256,9 @@ export function RiderHomeScreen({ onGoToRequests, onGoToProfile }: { onGoToReque
 function SwitchGlyph({ on }: { on: boolean }) {
   const { colors } = useThemeColors();
   return (
-    <View style={[styles.switchTrack, { backgroundColor: on ? colors.success : colors.borderStrong }]}>
+    <View
+      style={[styles.switchTrack, { backgroundColor: on ? colors.success : colors.borderStrong }]}
+    >
       <View style={[styles.switchThumb, { alignSelf: on ? 'flex-end' : 'flex-start' }]} />
     </View>
   );
@@ -152,39 +267,86 @@ function SwitchGlyph({ on }: { on: boolean }) {
 function Meta({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.meta}>
-      <AppText variant="smallMedium" weight="bold" color="#FFFFFF">{value}</AppText>
-      <AppText variant="micro" color="rgba(255,255,255,0.8)">{label}</AppText>
+      <AppText variant="smallMedium" weight="bold" color="#FFFFFF">
+        {value}
+      </AppText>
+      <AppText variant="micro" color="rgba(255,255,255,0.8)">
+        {label}
+      </AppText>
     </View>
   );
 }
 
-function Stat({ icon, value, label, tint }: { icon: keyof typeof Ionicons.glyphMap; value: string; label: string; tint: string }) {
+function Stat({
+  icon,
+  value,
+  label,
+  tint,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  value: string;
+  label: string;
+  tint: string;
+}) {
   const { colors } = useThemeColors();
   return (
-    <View style={[styles.stat, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+    <View
+      style={[styles.stat, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
+    >
       <Ionicons name={icon} size={16} color={tint} />
-      <AppText variant="title" weight="extraBold" color={colors.textPrimary}>{value}</AppText>
-      <AppText variant="micro" color={colors.textMuted}>{label}</AppText>
+      <AppText variant="title" weight="extraBold" color={colors.textPrimary}>
+        {value}
+      </AppText>
+      <AppText variant="micro" color={colors.textMuted}>
+        {label}
+      </AppText>
     </View>
   );
 }
 
-function FeedRow({ item, onAccept }: { item: DeliveryFeedItem; onAccept: () => void }) {
+function FeedRow({
+  item,
+  onAccept,
+  accepting,
+}: {
+  item: DeliveryFeedItem;
+  onAccept: () => void;
+  accepting: boolean;
+}) {
   const { colors } = useThemeColors();
   return (
-    <Pressable onPress={onAccept} style={styles.feedRow}>
-      <View style={[styles.feedIcon, { backgroundColor: item.kind === 'food' ? colors.primarySoft : colors.rideSoft }]}>
-        <Ionicons name={item.kind === 'food' ? 'restaurant-outline' : 'bicycle-outline'} size={22} color={item.kind === 'food' ? colors.primary : colors.ride} />
+    <Pressable
+      onPress={accepting ? undefined : onAccept}
+      disabled={accepting}
+      style={[styles.feedRow, accepting && { opacity: 0.6 }]}
+    >
+      <View
+        style={[
+          styles.feedIcon,
+          { backgroundColor: item.kind === 'food' ? colors.primarySoft : colors.rideSoft },
+        ]}
+      >
+        <Ionicons
+          name={item.kind === 'food' ? 'restaurant-outline' : 'bicycle-outline'}
+          size={22}
+          color={item.kind === 'food' ? colors.primary : colors.ride}
+        />
       </View>
       <View style={styles.feedInfo}>
-        <AppText variant="small" color={colors.textMuted} numberOfLines={1}>{item.pickup} → {item.dropoff}</AppText>
+        <AppText variant="small" color={colors.textMuted} numberOfLines={1}>
+          {item.pickup} → {item.dropoff}
+        </AppText>
         <AppText variant="micro" color={colors.textMuted}>
           {item.distanceKm.toFixed(1)} km · {formatDuration(item.durationMin)}
         </AppText>
       </View>
       <View style={styles.feedRight}>
-        <AppText variant="title" weight="extraBold" color={colors.success}>{formatCurrency(item.payout)}</AppText>
-        <AppText variant="microBold" color={colors.primary}>ACCEPT</AppText>
+        <AppText variant="title" weight="extraBold" color={colors.success}>
+          {formatCurrency(item.payout)}
+        </AppText>
+        <AppText variant="microBold" color={colors.primary}>
+          {accepting ? 'ACCEPTING…' : 'ACCEPT'}
+        </AppText>
       </View>
     </Pressable>
   );
@@ -196,7 +358,15 @@ const styles = StyleSheet.create({
   header: { gap: spacing.sm, marginBottom: spacing.sm },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   greeting: { gap: 1 },
-  onlinePill: { flexDirection: 'row', alignItems: 'center', gap: spacing.s, borderWidth: 1, borderRadius: 999, paddingHorizontal: spacing.m, paddingVertical: spacing.s },
+  onlinePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.s,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: spacing.m,
+    paddingVertical: spacing.s,
+  },
   onlineDot: { width: 10, height: 10, borderRadius: 5 },
   switchTrack: { width: 40, height: 24, borderRadius: 12, padding: 2, marginLeft: 'auto' },
   switchThumb: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#FFFFFF' },
@@ -204,17 +374,55 @@ const styles = StyleSheet.create({
   earningsTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   earningsMeta: { flexDirection: 'row', gap: spacing.l, marginTop: spacing.xs },
   meta: { gap: 1 },
-  bars: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', gap: spacing.xs, marginTop: spacing.l, height: 64 },
+  bars: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    gap: spacing.xs,
+    marginTop: spacing.l,
+    height: 64,
+  },
   barCol: { flex: 1, alignItems: 'center', gap: 4 },
-  barTrack: { width: 14, height: 44, borderRadius: 7, backgroundColor: 'rgba(255,255,255,0.18)', overflow: 'hidden', justifyContent: 'flex-end' },
+  barTrack: {
+    width: 14,
+    height: 44,
+    borderRadius: 7,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    overflow: 'hidden',
+    justifyContent: 'flex-end',
+  },
   barFill: { width: '100%', borderRadius: 7, backgroundColor: 'rgba(255,255,255,0.85)' },
   statsRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
-  stat: { flex: 1, borderRadius: 16, borderWidth: 1, padding: spacing.sm, alignItems: 'center', gap: 2 },
+  stat: {
+    flex: 1,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: spacing.sm,
+    alignItems: 'center',
+    gap: 2,
+  },
   feed: { backgroundColor: 'transparent', borderRadius: 0 },
-  feedRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.sm },
-  feedIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  feedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  feedIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   feedInfo: { flex: 1, gap: 2 },
   feedRight: { alignItems: 'flex-end', gap: 2 },
-  offlineCard: { borderRadius: 20, padding: spacing.l, alignItems: 'center', gap: spacing.xs, marginTop: spacing.sm },
+  offlineCard: {
+    borderRadius: 20,
+    padding: spacing.l,
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+  },
   offlineText: { textAlign: 'center' },
 });

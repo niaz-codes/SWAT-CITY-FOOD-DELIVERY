@@ -76,7 +76,7 @@ export const lightColors: ColorScheme = {
   surfaceMuted: '#EDF3F2',
   surfaceRaised: '#FFFFFF',
   textPrimary: '#0E2422',
-  textSecondary: '#42595690',
+  textSecondary: '#425956',
   textMuted: '#7C918E',
   textInverse: '#FFFFFF',
   border: '#E3ECEA',

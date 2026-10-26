@@ -1,4 +1,4 @@
-﻿import AsyncStorage from '@react-native-async-storage/async-storage';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Address,
   ActivityItem,
@@ -8,381 +8,46 @@ import {
   Favorite,
   MenuItem,
   Order,
+  OrderStatus,
   Restaurant,
   RideRequest,
   Rider,
   RiderEarningsPeriod,
   RiderStats,
-  RideFare,
   User,
   WalletTx,
   RideType,
+  VehicleType,
 } from '../types/domain';
-import { API_BASE_URL, httpGet, httpPost, setApiTokens, isNetworkError } from './client';
+import {
+  API_BASE_URL,
+  AUTH_TIMEOUT_MS,
+  httpDelete,
+  httpGet,
+  httpPatch,
+  httpPost,
+  httpUploadWithProgress,
+  setApiTokens,
+} from './client';
 
 export { API_BASE_URL };
 
 const SESSION_KEY = '@swat/session';
 
-const delay = (ms = 700) => new Promise<void>((resolve) => setTimeout(resolve, ms + Math.random() * 500));
+const DAY = 24 * 3_600_000;
 
-const HOUR = 3_600_000;
-const DAY = 24 * HOUR;
+const ID_RE = /^[0-9a-f]{24}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export const CURRENT_USER: User = {
-  id: 'u_001',
-  name: 'Ahmad Khan',
-  email: 'ahmad@example.com',
-  phone: '0345 1234567',
-  role: 'customer',
-  avatarGradient: ['#0E9488', '#0E3F3A'],
-  verified: true,
+/**
+ * Ride fare defaults, used only to estimate a fare before the trip is booked.
+ * These mirror the backend's base/per-km rates so the preview shown to the
+ * customer matches what the server will charge.
+ */
+const FARE_DEFAULTS: Record<RideType, { base: number; perKm: number }> = {
+  swat_moto: { base: 60, perKm: 22 },
+  swat_city: { base: 90, perKm: 28 },
+  swat_van: { base: 140, perKm: 36 },
 };
-
-export const RIDER_PROFILE: User = {
-  id: 'r_001',
-  name: 'Shahid Rehman',
-  email: 'shahid@example.com',
-  phone: '0340 5551122',
-  role: 'rider',
-  avatarGradient: ['#1B84B5', '#0E3F3A'],
-  verified: true,
-};
-
-export const ADMIN_PHONE = '03450050667';
-
-export const ADMIN_USER: User = {
-  id: 'adm_001',
-  name: 'Swat Admin',
-  email: 'admin@swatcity.pk',
-  phone: ADMIN_PHONE,
-  role: 'admin',
-  avatarGradient: ['#0E9488', '#7B2CBF'],
-  verified: true,
-};
-
-// ---------------------------------------------------------------------------
-// Reference locations (Swat Valley)
-// ---------------------------------------------------------------------------
-
-export const PLACES: Address[] = [
-  {
-    id: 'p_home',
-    label: 'Home',
-    full: 'House 42, Green View Colony, Main Mingora Road',
-    area: 'Mingora',
-    lat: 34.7802,
-    lng: 72.3625,
-    tagged: 'home',
-  },
-  {
-    id: 'p_work',
-    label: 'Saidu Teaching Hospital',
-    full: 'Hospital Road, Saidu Sharif',
-    area: 'Saidu Sharif',
-    lat: 34.7362,
-    lng: 72.3567,
-    tagged: 'work',
-  },
-  {
-    id: 'p_fizagat',
-    label: 'Fizagat Park',
-    full: 'Fizagat Public Park, Swat River Banks',
-    area: 'Mingora',
-    lat: 34.793,
-    lng: 72.369,
-    tagged: 'frequent',
-  },
-  {
-    id: 'p_bahrain',
-    label: 'Bahrain Bridge',
-    full: 'Bahrain Bazaar, Kalam Road',
-    area: 'Bahrain',
-    lat: 35.2077,
-    lng: 72.5477,
-    tagged: 'frequent',
-  },
-  {
-    id: 'p_school',
-    label: 'Swat Public School',
-    full: 'Gulshan Colony, Saidu Sharif Road',
-    area: 'Mingora',
-    lat: 34.7651,
-    lng: 72.3633,
-  },
-];
-
-export const SAVED_ADDRESSES: Address[] = [PLACES[0]!, PLACES[1]!, PLACES[2]!, PLACES[3]!];
-
-// ---------------------------------------------------------------------------
-// Restaurants & menu (reference data + offline fallback)
-// ---------------------------------------------------------------------------
-
-export const CATEGORIES = [
-  'All',
-  'BBQ',
-  'Karahi',
-  'Biryani & Pulao',
-  'Fast Food',
-  'Pizza',
-  'Trout & Grill',
-  'Desserts',
-  'Drinks',
-] as const;
-
-export const RESTAURANTS: Restaurant[] = [
-  {
-    id: 'rest_01',
-    name: 'Swat Grill House',
-    cuisine: 'BBQ • Charcoal',
-    rating: 4.8,
-    reviews: 1214,
-    deliveryTimeMin: 32,
-    deliveryFee: 60,
-    minOrder: 300,
-    deliveryKM: 2.1,
-    freeDelivery: true,
-    promo: 'Free delivery over Rs 800',
-    category: 'BBQ',
-    gradient: ['#C73E3E', '#5E1212'],
-    emoji: '🔥',
-    featured: true,
-    tags: ['Seekh Kabab', 'Chapli', 'Desi'],
-  },
-  {
-    id: 'rest_02',
-    name: 'Swati Karahi Khana',
-    cuisine: 'Karahi • Traditional',
-    rating: 4.7,
-    reviews: 876,
-    deliveryTimeMin: 38,
-    deliveryFee: 80,
-    minOrder: 400,
-    deliveryKM: 1.4,
-    freeDelivery: false,
-    promo: '10% off first order',
-    category: 'Karahi',
-    gradient: ['#8C3D2F', '#3C120C'],
-    emoji: '🍲',
-    featured: true,
-    tags: ['Chicken Karahi', 'Desi Ghee'],
-  },
-  {
-    id: 'rest_03',
-    name: 'Chowkara Chapli House',
-    cuisine: 'Chapli Kabab • Swat Special',
-    rating: 4.9,
-    reviews: 2043,
-    deliveryTimeMin: 30,
-    deliveryFee: 50,
-    minOrder: 250,
-    deliveryKM: 0.9,
-    freeDelivery: true,
-    promo: '2nd Chapli at half price',
-    category: 'BBQ',
-    gradient: ['#B05E1F', '#54250A'],
-    emoji: '🥩',
-    featured: true,
-    tags: ['Chapli Kabab', 'Mutton'],
-  },
-  {
-    id: 'rest_04',
-    name: 'Trout Point Cafe',
-    cuisine: 'Trout • Continental',
-    rating: 4.6,
-    reviews: 654,
-    deliveryTimeMin: 44,
-    deliveryFee: 90,
-    minOrder: 500,
-    deliveryKM: 5.2,
-    freeDelivery: false,
-    category: 'Trout & Grill',
-    gradient: ['#2B7A78', '#0B3B39'],
-    emoji: '🐟',
-    tags: ['Grilled Trout', 'Cafe'],
-  },
-  {
-    id: 'rest_05',
-    name: 'Malaman Zinger Hut',
-    cuisine: 'Fast Food • Snacks',
-    rating: 4.4,
-    reviews: 938,
-    deliveryTimeMin: 26,
-    deliveryFee: 40,
-    minOrder: 200,
-    deliveryKM: 1.1,
-    freeDelivery: true,
-    promo: 'Zinger + Drink combo',
-    category: 'Fast Food',
-    gradient: ['#C0560F', '#572C05'],
-    emoji: '🍗',
-    tags: ['Zinger Burger', 'Combo'],
-  },
-  {
-    id: 'rest_06',
-    name: 'Dastarkhwan Biryani',
-    cuisine: 'Biryani • Pulao',
-    rating: 4.5,
-    reviews: 1502,
-    deliveryTimeMin: 34,
-    deliveryFee: 50,
-    minOrder: 350,
-    deliveryKM: 1.8,
-    freeDelivery: true,
-    promo: 'Family deal · serves 4',
-    category: 'Biryani & Pulao',
-    gradient: ['#7A3B10', '#351603'],
-    emoji: '🍛',
-    featured: true,
-    tags: ['Chicken Biryani', 'Pulao'],
-  },
-  {
-    id: 'rest_07',
-    name: 'Kalam Valley Pizza Co.',
-    cuisine: 'Pizza • Wings',
-    rating: 4.3,
-    reviews: 512,
-    deliveryTimeMin: 28,
-    deliveryFee: 60,
-    minOrder: 400,
-    deliveryKM: 2.6,
-    freeDelivery: false,
-    category: 'Pizza',
-    gradient: ['#955B1D', '#422707'],
-    emoji: '🍕',
-    tags: ['Chicken Tikka', 'Ranch'],
-  },
-  {
-    id: 'rest_08',
-    name: 'Shringar Sweets & Desserts',
-    cuisine: 'Desserts • Halwai',
-    rating: 4.7,
-    reviews: 421,
-    deliveryTimeMin: 22,
-    deliveryFee: 30,
-    minOrder: 150,
-    deliveryKM: 1.0,
-    freeDelivery: true,
-    category: 'Desserts',
-    gradient: ['#8B3A63', '#300F28'],
-    emoji: '🍮',
-    tags: ['Gajar Halwa', 'Kheer'],
-  },
-];
-
-export const MENU: Record<string, MenuItem[]> = {
-  rest_01: [
-    { id: 'm_011', restaurantId: 'rest_01', name: 'Seekh Kabab (Half Dozen)', description: 'Charcoal-grilled beef seekh kababs with mint chutney, naan and onions.', price: 480, category: 'BBQ', rating: 4.8, calories: 610, prepMin: 18, popular: true, gradient: ['#B8402E', '#4E1008'], emoji: '🍢' },
-    { id: 'm_012', restaurantId: 'rest_01', name: 'Chapli Kabab (Single)', description: 'Flat minced mutton kabab cooked in desi ghee, tamarind chutney.', price: 240, category: 'BBQ', rating: 4.9, calories: 540, prepMin: 15, popular: true, gradient: ['#A8441D', '#4A1403'], emoji: '🥙' },
-    { id: 'm_013', restaurantId: 'rest_01', name: 'Malai Boti (8 pcs)', description: 'Cream-marinated chicken thighs, charred on slow fire.', price: 520, category: 'BBQ', rating: 4.7, calories: 580, prepMin: 20, gradient: ['#C53F3F', '#4E0F0F'], emoji: '🍗' },
-    { id: 'm_014', restaurantId: 'rest_01', name: 'Special Handi', description: 'Bone-in mutton cooked on dum, butter and green chilli.', price: 980, category: 'Handi', rating: 4.8, calories: 720, prepMin: 28, gradient: ['#8C3B1F', '#391006'], emoji: '🍲' },
-  ],
-  rest_02: [
-    { id: 'm_021', restaurantId: 'rest_02', name: 'Chicken Karahi (Half)', description: 'Fresh tomatoes, ginger and green chillies, desi ghee.', price: 850, category: 'Karahi', rating: 4.8, calories: 680, prepMin: 25, popular: true, gradient: ['#93341D', '#3C0F05'], emoji: '🍲' },
-    { id: 'm_022', restaurantId: 'rest_02', name: 'Namkeen Gosht', description: 'Slow-cooked mutton with makhana and brown onions.', price: 1050, category: 'Karahi', rating: 4.9, calories: 740, prepMin: 30, gradient: ['#6E3A17', '#2B0E03'], emoji: '🍖' },
-    { id: 'm_023', restaurantId: 'rest_02', name: 'Daal Chawal (Plate)', description: 'Sada daal, steamed rice, onion and lemon wedge.', price: 320, category: 'Thali', rating: 4.5, calories: 520, prepMin: 12, gradient: ['#B57A22', '#4E2B05'], emoji: '🍚' },
-    { id: 'm_024', restaurantId: 'rest_02', name: 'Roghni Naan', description: 'Buttered naan baked in tandoor, sesame crust.', price: 90, category: 'Bakery', rating: 4.6, calories: 240, prepMin: 8, gradient: ['#C08A2A', '#5C3406'], emoji: '🫓' },
-  ],
-  rest_03: [
-    { id: 'm_031', restaurantId: 'rest_03', name: 'Swat Chapli Kabab', description: '2 flat kababs, pomegranate seeds, tomatoes, onion rings.', price: 380, category: 'BBQ', rating: 4.9, calories: 590, prepMin: 16, popular: true, gradient: ['#B8601E', '#542007'], emoji: '🥙' },
-    { id: 'm_032', restaurantId: 'rest_03', name: 'Mutton Chapli (With Naan)', description: '1 jumbo chapli with roghni naan and chutney.', price: 320, category: 'BBQ', rating: 4.8, calories: 650, prepMin: 18, gradient: ['#A3481C', '#451503'], emoji: '🍖' },
-    { id: 'm_033', restaurantId: 'rest_03', name: 'Chapli Burger', description: 'Chapli patty, spicy mayo, fresh slaw in a toasted bun.', price: 290, category: 'Fast Food', rating: 4.7, calories: 620, prepMin: 12, gradient: ['#C0660E', '#5A2A03'], emoji: '🍔' },
-    { id: 'm_034', restaurantId: 'rest_03', name: 'Peshawar Nalli Soup', description: 'Bone marrow broth with coriander and lemon.', price: 260, category: 'Soup', rating: 4.6, calories: 380, prepMin: 14, gradient: ['#7A5C14', '#2F1F03'], emoji: '🍜' },
-  ],
-  rest_04: [
-    { id: 'm_041', restaurantId: 'rest_04', name: 'Grilled Trout (Whole)', description: 'Swat river trout, herbs and lemon butter, served with fries.', price: 950, category: 'Trout & Grill', rating: 4.9, calories: 590, prepMin: 26, popular: true, gradient: ['#1F6F68', '#0A2E2B'], emoji: '🐟' },
-    { id: 'm_042', restaurantId: 'rest_04', name: 'Trout Tikka', description: 'Smoky river trout pieces with garlic mayo.', price: 720, category: 'Trout & Grill', rating: 4.7, calories: 520, prepMin: 22, gradient: ['#2D7A6B', '#0C332A'], emoji: '🐠' },
-    { id: 'm_043', restaurantId: 'rest_04', name: 'Grape-Juice Chicken', description: 'Chicken in kata-turs banana grape glaze.', price: 680, category: 'Grill', rating: 4.6, calories: 610, prepMin: 24, gradient: ['#7A3B6B', '#320E2B'], emoji: '🍗' },
-  ],
-  rest_05: [
-    { id: 'm_051', restaurantId: 'rest_05', name: 'Zinger Burger Meal', description: 'Crispy zinger, fries and a cold drink.', price: 420, category: 'Fast Food', rating: 4.6, calories: 780, prepMin: 14, popular: true, gradient: ['#C2570F', '#59270A'], emoji: '🍔' },
-    { id: 'm_052', restaurantId: 'rest_05', name: 'Crispy Fries (Large)', description: 'Sea-salted fries with chilli flakes.', price: 180, category: 'Snacks', rating: 4.4, calories: 420, prepMin: 8, gradient: ['#C08A2A', '#5C3406'], emoji: '🍟' },
-    { id: 'm_053', restaurantId: 'rest_05', name: 'Chicken Nuggets (10)', description: 'Crispy tender bites with BBQ dip.', price: 320, category: 'Fast Food', rating: 4.5, calories: 540, prepMin: 10, gradient: ['#B87717', '#55310A'], emoji: '🍗' },
-    { id: 'm_054', restaurantId: 'rest_05', name: 'Cold Drink (500ml)', description: 'Chilled cola or lemon-lime.', price: 120, category: 'Drinks', rating: 4.2, calories: 210, prepMin: 2, gradient: ['#2B7FA8', '#0D2F42'], emoji: '🥤' },
-  ],
-  rest_06: [
-    { id: 'm_061', restaurantId: 'rest_06', name: 'Chicken Biryani (Single)', description: 'Roasted-chicken biryani with raita and salad.', price: 340, category: 'Biryani', rating: 4.7, calories: 690, prepMin: 18, popular: true, gradient: ['#8C4B10', '#3A1D02'], emoji: '🍛' },
-    { id: 'm_062', restaurantId: 'rest_06', name: 'Family Biryani (Serves 4)', description: 'Jumbo portion with extra chicken, two raitas.', price: 1100, category: 'Biryani', rating: 4.8, calories: 690, prepMin: 30, gradient: ['#7A3B10', '#301702'], emoji: '🥘' },
-    { id: 'm_063', restaurantId: 'rest_06', name: 'Mutton Pulao (Single)', description: 'Fragrant basmati with tender mutton chunks.', price: 450, category: 'Pulao', rating: 4.6, calories: 720, prepMin: 22, gradient: ['#8A6A1F', '#3A2C04'], emoji: '🍚' },
-    { id: 'm_064', restaurantId: 'rest_06', name: 'Shahi Raita', description: 'Cream raita with cucumber and boondi.', price: 150, category: 'Sides', rating: 4.5, calories: 220, prepMin: 5, gradient: ['#3E9489', '#123F3A'], emoji: '🥣' },
-  ],
-  rest_07: [
-    { id: 'm_071', restaurantId: 'rest_07', name: 'Chicken Tikka Pizza (Medium)', description: '14", tandoori chicken, onion, green capsicum, mozzarella.', price: 780, category: 'Pizza', rating: 4.5, calories: 980, prepMin: 24, popular: true, gradient: ['#9A5A1D', '#422505'], emoji: '🍕' },
-    { id: 'm_072', restaurantId: 'rest_07', name: 'Fajita Ranch Pizza', description: 'Grilled chicken fajita, jalapenos, ranch drizzle.', price: 830, category: 'Pizza', rating: 4.6, calories: 1020, prepMin: 26, gradient: ['#8A4A1C', '#381D04'], emoji: '🍕' },
-    { id: 'm_073', restaurantId: 'rest_07', name: 'Crispy Wings (8 pcs)', description: 'Spicy peri-peri glaze with cooling dip.', price: 460, category: 'Wings', rating: 4.4, calories: 540, prepMin: 16, gradient: ['#A8471C', '#461404'], emoji: '🍗' },
-    { id: 'm_074', restaurantId: 'rest_07', name: 'Garlic Bread', description: 'Buttered garlic herb bread with cheese pull.', price: 260, category: 'Sides', rating: 4.5, calories: 410, prepMin: 12, gradient: ['#B8831B', '#5C3404'], emoji: '🍞' },
-  ],
-  rest_08: [
-    { id: 'm_081', restaurantId: 'rest_08', name: 'Gajar ka Halwa', description: 'Slow-cooked carrot halwa with desi ghee and nuts.', price: 220, category: 'Desserts', rating: 4.9, calories: 480, prepMin: 10, popular: true, gradient: ['#B3543A', '#52160C'], emoji: '🥕' },
-    { id: 'm_082', restaurantId: 'rest_08', name: 'Kheer (Half Kg)', description: 'Rice kheer with khoya and pistachio.', price: 350, category: 'Desserts', rating: 4.7, calories: 450, prepMin: 8, gradient: ['#8A7A15', '#3D3405'], emoji: '🍮' },
-    { id: 'm_083', restaurantId: 'rest_08', name: 'Jalebi (Half Dozen)', description: 'Fresh, crunchy orange spirals in syrup.', price: 160, category: 'Desserts', rating: 4.6, calories: 380, prepMin: 6, gradient: ['#C07A12', '#633703'], emoji: '🥮' },
-    { id: 'm_084', restaurantId: 'rest_08', name: 'Kashmiri Chai (2 Cups)', description: 'Pink tea with cardamom and crushed nuts.', price: 240, category: 'Drinks', rating: 4.8, calories: 260, prepMin: 12, gradient: ['#C2547B', '#5E0F2C'], emoji: '🫖' },
-  ],
-};
-
-export const POPULAR_ITEMS: MenuItem[] = [
-  MENU.rest_03![0]!,
-  MENU.rest_01![0]!,
-  MENU.rest_06![0]!,
-  MENU.rest_02![0]!,
-  MENU.rest_05![0]!,
-  MENU.rest_04![0]!,
-];
-
-export const RIDERS: Rider[] = [
-  {
-    id: 'rider_01',
-    name: 'Shahid Rehman',
-    phone: '0340 5551122',
-    rating: 4.9,
-    trips: 1286,
-    vehicle: 'Honda CG 125',
-    plateNumber: 'SWT-8321',
-    status: 'online',
-    avatarGradient: ['#1B84B5', '#0E3F3A'],
-    etaMin: 5,
-    lat: PLACES[0]!.lat + 0.004,
-    lng: PLACES[0]!.lng + 0.003,
-  },
-  {
-    id: 'rider_02',
-    name: 'Bilal Wazir',
-    phone: '0341 9048211',
-    rating: 4.8,
-    trips: 942,
-    vehicle: 'Skygo 150',
-    plateNumber: 'SWT-5510',
-    status: 'online',
-    avatarGradient: ['#7A3B8C', '#2B0E35'],
-    etaMin: 7,
-    lat: PLACES[1]!.lat + 0.005,
-    lng: PLACES[1]!.lng - 0.004,
-  },
-  {
-    id: 'rider_03',
-    name: 'Imran Afridi',
-    phone: '0345 4021930',
-    rating: 4.7,
-    trips: 762,
-    vehicle: 'United US150',
-    plateNumber: 'MGL-2214',
-    status: 'online',
-    avatarGradient: ['#B05E1F', '#54250A'],
-    etaMin: 9,
-    lat: PLACES[4]!.lat - 0.006,
-    lng: PLACES[4]!.lng + 0.006,
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Rides
-// ---------------------------------------------------------------------------
-
-export const RIDE_FARES: RideFare[] = [
-  { rideType: 'swat_moto', vehicle: 'bike', label: 'Swat Moto', capacity: '1 rider', etaMin: 3, base: 60, perKm: 22, icon: 'bicycle' },
-  { rideType: 'swat_city', vehicle: 'rickshaw', label: 'Swat City', capacity: 'Up to 4', etaMin: 6, base: 90, perKm: 28, icon: 'car-sport' },
-  { rideType: 'swat_van', vehicle: 'van', label: 'Swat Van', capacity: 'Up to 7', etaMin: 12, base: 140, perKm: 36, icon: 'bus' },
-];
 
 // ---------------------------------------------------------------------------
 // Response shape mappers (backend JSON → app domain types)
@@ -520,19 +185,41 @@ type BackFeedItem = {
   createdAt?: string | Date;
 };
 
-const asGradient = (g?: string[]): [string, string] => {
+/** Raw ride document as returned by /rides/:id (customer may be populated). */
+type BackRideCustomer = { _id?: unknown; name?: string; phone?: string };
+
+type BackRide = {
+  _id?: unknown;
+  rideNumber?: string;
+  customer?: BackRideCustomer;
+  rider?: { _id?: string; name?: string; phone?: string; avatarUrl?: string | null } | null;
+  type?: 'swat_moto' | 'swat_city' | 'swat_van';
+  vehicle?: string;
+  status?: 'searching' | 'accepted' | 'arriving' | 'started' | 'completed' | 'cancelled' | string;
+  pickup?: { address?: string; area?: string | null; lat?: number; lng?: number } | null;
+  dropoff?: { address?: string; area?: string | null; lat?: number; lng?: number } | null;
+  distanceKm?: number;
+  durationMin?: number;
+  fare?: number;
+  riderPayout?: number;
+  paymentMethod?: string;
+  cancelReason?: string | null;
+  createdAt?: string | Date;
+};
+
+export const asGradient = (g?: string[]): [string, string] => {
   const source = Array.isArray(g) && g.length >= 2 ? g : ['#0E9488', '#0E3F3A'];
   return [source[0] ?? '#0E9488', source[1] ?? '#0E3F3A'];
 };
 
-const objId = (v: unknown): string => {
+export const objId = (v: unknown): string => {
   if (!v) return '';
   if (typeof v === 'string') return v;
   const o = v as { _id?: unknown; id?: unknown };
   return String(o._id ?? o.id ?? '');
 };
 
-const prop = <T,>(v: unknown, key: string): T | undefined => {
+export const prop = <T>(v: unknown, key: string): T | undefined => {
   if (v && typeof v === 'object' && key in (v as Record<string, unknown>)) {
     return (v as Record<string, unknown>)[key] as T;
   }
@@ -545,8 +232,12 @@ const normalizePhone = (raw: string): string => {
   return d.startsWith('0') ? d : `0${d}`;
 };
 
-const roleGradient = (role?: string): [string, string] =>
-  role === 'admin' ? ['#0E9488', '#7B2CBF'] : role === 'rider' ? ['#1B84B5', '#0E3F3A'] : ['#0E9488', '#0E3F3A'];
+export const roleGradient = (role?: string): [string, string] =>
+  role === 'admin'
+    ? ['#0E9488', '#7B2CBF']
+    : role === 'rider'
+      ? ['#1B84B5', '#0E3F3A']
+      : ['#0E9488', '#0E3F3A'];
 
 const mapUser = (u: BackUser): User => ({
   id: String(u.id ?? ''),
@@ -647,10 +338,14 @@ const mapOrderRider = (o: BackOrder): Rider | undefined => {
 const mapOrder = (o: BackOrder): Order => {
   const restaurant = o.restaurant;
   const restaurantId = objId(restaurant);
-  const restaurantName = typeof restaurant === 'object' && restaurant ? (prop<string>(restaurant, 'name') ?? '') : '';
+  const restaurantName =
+    typeof restaurant === 'object' && restaurant ? (prop<string>(restaurant, 'name') ?? '') : '';
   const restaurantEmoji =
     typeof restaurant === 'object' && restaurant ? (prop<string>(restaurant, 'emoji') ?? '') : '';
-  const gradient = typeof restaurant === 'object' && restaurant ? prop<string[]>(restaurant, 'gradient') : undefined;
+  const gradient =
+    typeof restaurant === 'object' && restaurant
+      ? prop<string[]>(restaurant, 'gradient')
+      : undefined;
   return {
     id: String(o._id ?? ''),
     type: 'food',
@@ -703,14 +398,19 @@ const mapWalletTx = (t: BackWalletTx): WalletTx => ({
   id: String(t._id ?? ''),
   kind: t.type === 'debit' || t.type === 'commission' ? 'debit' : 'credit',
   title: t.description ?? `Wallet ${t.type ?? 'transaction'}`,
-  subtitle: t.reference ? (t.referenceModel ? `${t.reference} · ${t.referenceModel}` : t.reference) : (t.type ?? ''),
+  subtitle: t.reference
+    ? t.referenceModel
+      ? `${t.reference} · ${t.referenceModel}`
+      : t.reference
+    : (t.type ?? ''),
   amount: Number(t.amount ?? 0),
   at: new Date(t.createdAt ?? Date.now()),
 });
 
 const mapNotification = (n: BackNotification): AppNotification => {
   const raw = n.type ?? 'system';
-  const kind: AppNotification['kind'] = raw === 'order' || raw === 'ride' || raw === 'promo' ? raw : 'system';
+  const kind: AppNotification['kind'] =
+    raw === 'order' || raw === 'ride' || raw === 'promo' ? raw : 'system';
   return {
     id: String(n._id ?? ''),
     title: n.title ?? '',
@@ -745,163 +445,239 @@ const mapFeedItem = (f: BackFeedItem): DeliveryFeedItem => ({
 });
 
 // ---------------------------------------------------------------------------
-// Demo-data policy
-//
-// Every read endpoint in this file is written as `withFallback(live, demo)`.
-// That is convenient while building screens, but it is exactly the "mock data
-// standing in for real backend functionality" failure mode: in a production
-// build a failed API call silently renders fake restaurants, orders, earnings
-// and wallet balances, and the user has no idea the data is not real.
-//
-// So demo fallback is DEV-ONLY. In release builds it is disabled by default and
-// the real error propagates to the screen, which surfaces a proper error state.
-// Set EXPO_PUBLIC_ALLOW_DEMO_DATA=true to re-enable it for offline demos or
-// screenshots.
-// ---------------------------------------------------------------------------
-
-export const DEMO_DATA_ENABLED =
-  process.env.EXPO_PUBLIC_ALLOW_DEMO_DATA === 'true' || (typeof __DEV__ !== 'undefined' && __DEV__);
-
-const demo = <T>(value: T, ms = 350): Promise<T> => {
-  if (!DEMO_DATA_ENABLED) {
-    return Promise.reject(new Error('Demo data is disabled in release builds.'));
-  }
-  return delay(ms).then(() => value);
-};
-
-async function withFallback<T>(
-  live: () => Promise<T>,
-  fallback: () => Promise<T> | T,
-  opts: { networkOnly?: boolean } = {},
-): Promise<T> {
-  try {
-    return await live();
-  } catch (error) {
-    // Release builds must never mask a backend failure behind fake data.
-    if (!DEMO_DATA_ENABLED) throw error;
-    if (opts.networkOnly && !isNetworkError(error)) throw error;
-    return fallback();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// OTP hint — lets the OTP screen auto-fill the development code
-// ---------------------------------------------------------------------------
-
-const OTP_HINT_KEY = '@swat/otp-hint';
-
-async function persistOtpHint(hint: string | null): Promise<void> {
-  if (hint) await AsyncStorage.setItem(OTP_HINT_KEY, hint);
-  else await AsyncStorage.removeItem(OTP_HINT_KEY);
-}
-
-export async function getOtpHint(): Promise<string | null> {
-  try {
-    return await AsyncStorage.getItem(OTP_HINT_KEY);
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // API surface
 // ---------------------------------------------------------------------------
 
+/**
+ * A half-finished email-OTP flow.
+ *
+ * Login, registration and password reset all answer with this instead of a
+ * session: the account has been created (or the credentials checked), and a
+ * 6-digit code has been emailed. `challengeToken` is the short-lived proof the
+ * client echoes back to the verify / resend endpoints — it is not an access
+ * token and cannot authenticate a request on its own.
+ */
+export type EmailOtpPurpose = 'login' | 'register' | 'reset';
+
+export type EmailOtpChallenge = {
+  otpRequired: true;
+  purpose: EmailOtpPurpose;
+  email: string;
+  challengeToken: string;
+  ttlSeconds: number;
+};
+
+/** Forgot-password answer: the challenge plus an enumeration-safe message. */
+export type ForgotPasswordResult = EmailOtpChallenge & { message: string };
+
 export const authApi = {
-  async login(phone: string): Promise<{ ok: boolean; message: string }> {
-    const digits = normalizePhone(phone);
-    if (digits.length < 10) {
-      return { ok: false, message: 'Enter a valid 11-digit mobile number' };
-    }
-    return withFallback(
-      async () => {
-        const res = await httpPost<{ sent?: boolean }>('/auth/otp/request', { phone: digits }, false);
-        const hint = res.meta ? (res.meta as { debugOtp?: string }).debugOtp : undefined;
-        await persistOtpHint(hint ?? null);
-        return { ok: Boolean(res.data.sent) || true, message: 'OTP sent to your number' };
-      },
-      async () => ({ ok: true, message: 'OTP sent to your number' }),
-      { networkOnly: true },
+  /**
+   * Email + password sign-in, step 1.
+   *
+   * Checks the credentials server-side and emails a 6-digit code. No session is
+   * created here: the caller continues on the EmailOtp screen, which exchanges
+   * the code for a session. The caller routes on the returned `purpose`.
+   */
+  async login(email: string, password: string): Promise<EmailOtpChallenge> {
+    const res = await httpPost<EmailOtpChallenge>(
+      '/auth/login/email',
+      { email: email.trim().toLowerCase(), password },
+      false,
+      AUTH_TIMEOUT_MS,
     );
+    return res.data;
   },
 
-  async verifyOtp(otp: string, name?: string, phone?: string): Promise<User> {
-    const digits = normalizePhone(phone ?? '');
-    const demoOtp = DEMO_DATA_ENABLED && normalizePhone(otp) === '0000';
-    const target = digits || (demoOtp ? normalizePhone(CURRENT_USER.phone) : '');
-    if (!target) throw new Error('Invalid OTP');
-
-    try {
-      return await verifyAgainstBackend(target, otp, name);
-    } catch (error) {
-      // Signing in with fabricated user data would be worse than an error: the
-      // app would show an authenticated session that the backend has never seen.
-      if (DEMO_DATA_ENABLED && isNetworkError(error)) {
-        return mockVerify(otp, name, phone);
-      }
-      // Demo quick-logins send 0000 without a prior request — ask for a fresh
-      // OTP on the live backend and verify with the echoed dev code instead.
-      if (demoOtp && target) {
-        try {
-          const req = await httpPost<{ sent?: boolean }>('/auth/otp/request', { phone: target }, false);
-          const hint = req.meta ? (req.meta as { debugOtp?: string }).debugOtp : undefined;
-          if (hint) return await verifyAgainstBackend(target, hint, name);
-        } catch {
-          // keep the original error
-        }
-      }
-      throw error;
+  /** Step 2: confirm the emailed code and open the session. */
+  async verifyEmailOtp(challengeToken: string, otp: string): Promise<User> {
+    const res = await httpPost<{ user?: BackUser; accessToken?: string; refreshToken?: string }>(
+      '/auth/otp/email/verify',
+      { challengeToken, otp },
+      false,
+      AUTH_TIMEOUT_MS,
+    );
+    const auth = res.data;
+    if (!auth?.user || !auth.accessToken || !auth.refreshToken) {
+      throw new Error('Verification failed. Please try again.');
     }
+    await setApiTokens({ accessToken: auth.accessToken, refreshToken: auth.refreshToken });
+    const user = mapUser(auth.user);
+    await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(user));
+    return user;
+  },
+
+  /** Re-send the code for a flow that already has a challenge token. */
+  async resendEmailOtp(challengeToken: string): Promise<EmailOtpChallenge> {
+    const res = await httpPost<EmailOtpChallenge>(
+      '/auth/otp/email/resend',
+      { challengeToken },
+      false,
+      AUTH_TIMEOUT_MS,
+    );
+    return res.data;
+  },
+
+  /**
+   * Customer sign-in / sign-up with Google.
+   *
+   * Sends only the Google ID token — never a name, email or photo — and stores
+   * the session exactly like an email-OTP login. Google has already verified the
+   * email, so an existing customer signs straight in and a new email is
+   * registered immediately: there is no phone step and no second code. There is
+   * deliberately no demo fallback — fabricating a local session would show an
+   * authenticated customer the backend never issued a token for.
+   *
+   * `created` is true when a brand new account was registered, so the caller can
+   * tailor the welcome copy.
+   */
+  async googleLogin(idToken: string): Promise<{ user: User; created: boolean }> {
+    const res = await httpPost<{ user?: BackUser; accessToken?: string; refreshToken?: string }>(
+      '/auth/google',
+      { idToken },
+      false,
+      AUTH_TIMEOUT_MS,
+    );
+    const auth = res.data;
+    if (!auth?.user || !auth.accessToken || !auth.refreshToken) {
+      throw new Error('Google sign-in failed. Please try again.');
+    }
+    await setApiTokens({ accessToken: auth.accessToken, refreshToken: auth.refreshToken });
+    const user = mapUser(auth.user);
+    await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(user));
+    const created = Boolean((res.meta as { created?: boolean } | undefined)?.created);
+    return { user, created };
+  },
+
+  /**
+   * Rider onboarding.
+   *
+   * Multipart because the photo has to travel with the form: the backend
+   * creates the account, the profile and the photo in one operation, so a
+   * rider can never end up registered without the mandatory photo. `photoUri`
+   * is always a fresh camera capture — this screen offers no gallery option.
+   *
+   * Returns an email-OTP challenge like every other sign-up: the rider confirms
+   * the code before a session is issued.
+   */
+  async registerRider(input: {
+    name: string;
+    phone: string;
+    email: string;
+    password: string;
+    cnic: string;
+    baseCity?: string;
+    vehicleType: 'bike' | 'rickshaw' | 'van' | 'car';
+    vehiclePlate: string;
+    experienceYears: number;
+    location: { lat: number; lng: number; label?: string };
+    photoUri: string;
+    /** The type the picker reported, when it could work one out. */
+    photoMimeType?: string;
+    /** Upload progress, 0-100. Fires until the server has the whole body. */
+    onProgress?: (percent: number) => void;
+  }): Promise<EmailOtpChallenge> {
+    const form = new FormData();
+    form.append('name', input.name);
+    form.append('phone', normalizePhone(input.phone));
+    if (input.email) form.append('email', input.email);
+    form.append('password', input.password);
+    form.append('cnic', input.cnic);
+    if (input.baseCity) form.append('baseCity', input.baseCity);
+    form.append('vehicleType', input.vehicleType);
+    form.append('vehiclePlate', input.vehiclePlate);
+    form.append('experienceYears', String(input.experienceYears));
+    form.append('latitude', String(input.location.lat));
+    form.append('longitude', String(input.location.lng));
+    if (input.location.label) form.append('locationLabel', input.location.label);
+    // The camera normally hands back a JPEG, but Android's own editor can save
+    // a PNG. The declared type has to match the bytes, otherwise the server
+    // stores a PNG under a .jpg name and some viewers refuse to show it.
+    // The picker's own answer is used when it has one; the file name is the
+    // fallback for the captures that carry no type at all.
+    const mimeType =
+      input.photoMimeType ?? (/\.png(\?|$)/i.test(input.photoUri) ? 'image/png' : 'image/jpeg');
+    const isPng = mimeType.toLowerCase().includes('png');
+    form.append('photo', {
+      uri: input.photoUri,
+      name: isPng ? 'photo.png' : 'photo.jpg',
+      type: mimeType,
+    } as unknown as Blob);
+
+    const res = await httpUploadWithProgress<EmailOtpChallenge>(
+      '/auth/register/rider',
+      form,
+      input.onProgress,
+      'POST',
+      false,
+    );
+    return res.data;
   },
 
   async saveUser(user: User): Promise<void> {
     await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(user));
   },
 
-  async register(name: string, phone: string, email: string): Promise<User> {
-    const digits = normalizePhone(phone);
-    return withFallback(
-      async () => {
-        const res = await httpPost<{ sent?: boolean }>('/auth/otp/request', { phone: digits }, false);
-        const hint = res.meta ? (res.meta as { debugOtp?: string }).debugOtp : undefined;
-        await persistOtpHint(hint ?? null);
-        return buildGuestUser(name, digits, email);
+  /**
+   * Customer sign-up with email + password.
+   *
+   * Calls the real `/auth/register` endpoint, which hashes the password and
+   * emails a 6-digit code. No session is issued until that code is confirmed on
+   * the EmailOtp screen — there is no demo guest fallback (a silently fake
+   * account would be worse than a visible failure).
+   */
+  async register(input: {
+    name: string;
+    phone: string;
+    email: string;
+    password: string;
+  }): Promise<EmailOtpChallenge> {
+    const res = await httpPost<EmailOtpChallenge>(
+      '/auth/register',
+      {
+        name: input.name.trim(),
+        phone: normalizePhone(input.phone),
+        email: input.email.trim().toLowerCase(),
+        password: input.password,
+        role: 'customer',
       },
-      () => buildGuestUser(name, digits, email),
-      { networkOnly: true },
-    );
-  },
-
-  // -------------------------------------------------------------------------
-  // Password reset (Brevo). Unlike the read endpoints above these have NO demo
-  // fallback - a fake "reset email sent" confirmation would be actively harmful.
-  // -------------------------------------------------------------------------
-
-  /** Always resolves; the endpoint answers 200 for unknown addresses too. */
-  async requestPasswordReset(email: string): Promise<{ message: string }> {
-    const res = await httpPost<{ message?: string }>('/auth/forgot-password', { email: email.trim() }, false);
-    return {
-      message: res.data.message ?? 'If that email is registered, a reset link is on its way.',
-    };
-  },
-
-  async verifyResetToken(token: string): Promise<{ valid: boolean; message: string }> {
-    const res = await httpPost<{ valid?: boolean; message?: string }>(
-      '/auth/reset-password/verify',
-      { token },
       false,
+      AUTH_TIMEOUT_MS,
     );
-    return {
-      valid: Boolean(res.data.valid),
-      message: res.data.message ?? 'This reset link is invalid or has expired.',
-    };
+    return res.data;
   },
 
-  async resetPassword(token: string, newPassword: string): Promise<{ message: string }> {
+  // -------------------------------------------------------------------------
+  // Password reset (email OTP via Supabase Auth). Unlike the read endpoints above these
+  // have NO demo fallback - a fake "code sent" confirmation would be actively
+  // harmful.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Start a reset. Always resolves 200, even for unknown addresses, so the
+   * endpoint cannot be used to discover which emails have accounts. Returns the
+   * OTP challenge the reset screen needs for step 2.
+   */
+  async requestPasswordReset(email: string): Promise<ForgotPasswordResult> {
+    const res = await httpPost<ForgotPasswordResult>(
+      '/auth/forgot-password',
+      { email: email.trim().toLowerCase() },
+      false,
+      AUTH_TIMEOUT_MS,
+    );
+    return res.data;
+  },
+
+  /** Step 2: confirm the emailed code and set the new password. */
+  async resetPassword(
+    challengeToken: string,
+    otp: string,
+    newPassword: string,
+  ): Promise<{ message: string }> {
     const res = await httpPost<{ message?: string }>(
       '/auth/reset-password',
-      { token, newPassword },
+      { challengeToken, otp, newPassword },
       false,
+      AUTH_TIMEOUT_MS,
     );
     return { message: res.data.message ?? 'Password updated. You can sign in now.' };
   },
@@ -923,204 +699,83 @@ export const authApi = {
   async logout(): Promise<void> {
     await AsyncStorage.removeItem(SESSION_KEY);
     await setApiTokens(null);
-    await persistOtpHint(null);
   },
 };
-
-async function verifyAgainstBackend(phone: string, otp: string, name?: string): Promise<User> {
-  const res = await httpPost<{ user?: BackUser; accessToken?: string; refreshToken?: string }>('/auth/otp/verify', {
-    phone,
-    otp,
-    name: name && name.trim() ? name.trim() : undefined,
-  });
-  const auth = res.data;
-  if (!auth?.user || !auth.accessToken || !auth.refreshToken) throw new Error('Verification failed');
-  await setApiTokens({ accessToken: auth.accessToken, refreshToken: auth.refreshToken });
-  await persistOtpHint(null);
-  const user = mapUser(auth.user);
-  await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(user));
-  return user;
-}
-
-async function mockVerify(otp: string, name?: string, phone?: string): Promise<User> {
-  const clean = normalizePhone(otp);
-  if (clean.length !== 4 && clean.length !== 6) throw new Error('Invalid OTP');
-  const digits = normalizePhone(phone ?? '');
-  const user: User =
-    digits === normalizePhone(ADMIN_PHONE)
-      ? ADMIN_USER
-      : {
-          ...CURRENT_USER,
-          name: name && name.trim() ? name.trim() : CURRENT_USER.name,
-          phone: phone ?? CURRENT_USER.phone,
-        };
-  await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(user));
-  return user;
-}
-
-function buildGuestUser(name: string, phone: string, email: string): User {
-  return {
-    ...CURRENT_USER,
-    name: name.trim() || CURRENT_USER.name,
-    phone,
-    email,
-  };
-}
 
 export const addressApi = {
   async getSaved(): Promise<Address[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ addresses?: BackAddress[] }>('/customer/addresses');
-        return (res.data.addresses ?? []).map(mapAddress);
-      },
-      () => demo(SAVED_ADDRESSES),
-    );
+    const res = await httpGet<{ addresses?: BackAddress[] }>('/customer/addresses');
+    return (res.data.addresses ?? []).map(mapAddress);
   },
 
   async searchPlaces(q: string): Promise<Address[]> {
-    await delay(400);
-    const query = q.trim().toLowerCase();
+    const query = q.trim();
     if (!query) return [];
-    return PLACES.filter(
-      (p) =>
-        p.full.toLowerCase().includes(query) ||
-        p.area.toLowerCase().includes(query) ||
-        p.label.toLowerCase().includes(query),
+    const res = await httpGet<{ places?: BackAddress[] }>(
+      `/places/search?q=${encodeURIComponent(query)}`,
+      false,
     );
+    return (res.data.places ?? []).map(mapAddress);
   },
 };
-
-function localSearch(q: string): { restaurants: Restaurant[]; dishes: MenuItem[] } {
-  const query = q.trim().toLowerCase();
-  if (!query) return { restaurants: [], dishes: [] };
-  const restaurants = RESTAURANTS.filter(
-    (r) =>
-      r.name.toLowerCase().includes(query) ||
-      r.cuisine.toLowerCase().includes(query) ||
-      r.tags.some((t) => t.toLowerCase().includes(query)),
-  );
-  const dishes = Object.values(MENU)
-    .flat()
-    .filter((m) => m.name.toLowerCase().includes(query) || m.description.toLowerCase().includes(query));
-  return { restaurants, dishes };
-}
 
 export const foodApi = {
   async getRestaurants(): Promise<Restaurant[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ restaurants?: BackRestaurant[] }>('/restaurants', false);
-        return (res.data.restaurants ?? []).map(mapRestaurant);
-      },
-      () => demo(RESTAURANTS),
-    );
+    const res = await httpGet<{ restaurants?: BackRestaurant[] }>('/restaurants', false);
+    return (res.data.restaurants ?? []).map(mapRestaurant);
   },
 
   async getFeaturedRestaurants(): Promise<Restaurant[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ restaurants?: BackRestaurant[] }>('/restaurants/featured', false);
-        return (res.data.restaurants ?? []).map(mapRestaurant);
-      },
-      () => demo(RESTAURANTS.filter((r) => r.featured)),
-    );
+    const res = await httpGet<{ restaurants?: BackRestaurant[] }>('/restaurants/featured', false);
+    return (res.data.restaurants ?? []).map(mapRestaurant);
   },
 
   async getRestaurant(id: string): Promise<Restaurant> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ restaurant?: BackRestaurant }>(`/restaurants/${id}`, false);
-        if (!res.data.restaurant) throw new Error('Restaurant not found');
-        return mapRestaurant(res.data.restaurant);
-      },
-      () => {
-        const found = RESTAURANTS.find((r) => r.id === id);
-        if (!found) throw new Error('Restaurant not found');
-        return found;
-      },
-    );
+    const res = await httpGet<{ restaurant?: BackRestaurant }>(`/restaurants/${id}`, false);
+    if (!res.data.restaurant) throw new Error('Restaurant not found');
+    return mapRestaurant(res.data.restaurant);
   },
 
   async getMenu(restaurantId: string): Promise<MenuItem[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ items?: BackFoodItem[] }>(`/restaurants/${restaurantId}/menu`, false);
-        return (res.data.items ?? []).map(mapMenuItem);
-      },
-      () => demo(MENU[restaurantId] ?? []),
+    const res = await httpGet<{ items?: BackFoodItem[] }>(
+      `/restaurants/${restaurantId}/menu`,
+      false,
     );
+    return (res.data.items ?? []).map(mapMenuItem);
   },
 
   async getPopular(): Promise<MenuItem[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ items?: BackFoodItem[] }>('/restaurants/popular', false);
-        return (res.data.items ?? []).map(mapMenuItem);
-      },
-      () => demo(POPULAR_ITEMS),
+    const res = await httpGet<{ items?: BackFoodItem[] }>('/restaurants/popular', false);
+    return (res.data.items ?? []).map(mapMenuItem);
+  },
+
+  async getCategories(): Promise<string[]> {
+    const res = await httpGet<{ categories?: ({ name?: string } | string)[] }>(
+      '/restaurants/categories',
+      false,
     );
+    return (res.data.categories ?? [])
+      .map((c) => (typeof c === 'string' ? c : (c.name ?? '')))
+      .filter((name): name is string => Boolean(name));
   },
 
   async search(q: string): Promise<{ restaurants: Restaurant[]; dishes: MenuItem[] }> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ restaurants?: BackRestaurant[]; dishes?: BackFoodItem[] }>(
-          `/restaurants/search?q=${encodeURIComponent(q)}`,
-          false,
-        );
-        return {
-          restaurants: (res.data.restaurants ?? []).map(mapRestaurant),
-          dishes: (res.data.dishes ?? []).map(mapMenuItem),
-        };
-      },
-      () => demo(localSearch(q)),
+    const res = await httpGet<{ restaurants?: BackRestaurant[]; dishes?: BackFoodItem[] }>(
+      `/restaurants/search?q=${encodeURIComponent(q)}`,
+      false,
     );
+    return {
+      restaurants: (res.data.restaurants ?? []).map(mapRestaurant),
+      dishes: (res.data.dishes ?? []).map(mapMenuItem),
+    };
   },
 };
-
-function mockOrders(): Order[] {
-  const now = new Date();
-  const first: Order = {
-    id: 'SWT-4821',
-    type: 'food',
-    restaurantName: 'Swat Grill House',
-    restaurantEmoji: '🔥',
-    restaurantGradient: ['#C73E3E', '#5E1212'],
-    items: [{ menuItem: POPULAR_ITEMS[0]!, restaurantId: POPULAR_ITEMS[0]!.restaurantId, quantity: 1 }],
-    status: 'delivered',
-    total: 640,
-    deliveryFee: 60,
-    distanceKm: 2.1,
-    placedAt: new Date(now.getTime() - 3 * HOUR),
-    estimatedMinutes: 32,
-    rider: RIDERS[0],
-    address: 'House 42, Green View Colony, Mingora',
-  };
-  const second: Order = {
-    id: 'SWT-4764',
-    type: 'ride',
-    restaurantName: 'Ride to Fizagat Park',
-    restaurantEmoji: '🛺',
-    restaurantGradient: ['#1B84B5', '#0E3F3A'],
-    items: [],
-    status: 'on_the_way',
-    total: 210,
-    deliveryFee: 0,
-    distanceKm: 3.4,
-    placedAt: new Date(now.getTime() - 2 * HOUR),
-    estimatedMinutes: 24,
-    rider: RIDERS[1],
-    address: 'Mingora → Fizagat Park',
-  };
-  return [first, second];
-}
 
 // ---------------------------------------------------------------------------
 // Payments
 // ---------------------------------------------------------------------------
 
-export type CheckoutPaymentMethod = 'cash' | 'easypaisa' | 'jazzcash';
+export type CheckoutPaymentMethod = 'easypaisa' | 'jazzcash';
 
 export type GatewayMethodInfo = {
   method: string;
@@ -1139,13 +794,17 @@ export type OrderQuote = {
   currency: string;
   itemCount: number;
   estimatedMinutes: number;
-  restaurant: { id?: unknown; name?: string; emoji?: string; gradient?: string[]; cuisine?: string };
+  restaurant: {
+    id?: unknown;
+    name?: string;
+    emoji?: string;
+    gradient?: string[];
+    cuisine?: string;
+  };
   methods: GatewayMethodInfo[];
 };
 
-export type PaymentHandoff =
-  | { type: 'form'; url: string }
-  | { type: 'redirect'; url: string };
+export type PaymentHandoff = { type: 'form'; url: string } | { type: 'redirect'; url: string };
 
 export type PlaceOrderResult = {
   order: Order;
@@ -1225,11 +884,21 @@ export const paymentApi = {
   async abandon(orderId: string): Promise<void> {
     await httpPost(`/payments/orders/${orderId}/payment/abandon`, {});
   },
+};
 
-  /** Switches an unpaid order to cash on delivery. */
-  async switchToCash(orderId: string): Promise<void> {
-    await httpPost(`/payments/orders/${orderId}/payment/cash`, {});
-  },
+/** Live tracking payload from `/orders/:id/track`. */
+export type OrderLiveTracking = {
+  orderId: string;
+  status: OrderStatus;
+  trackingActive: boolean;
+  estimatedMinutes: number | null;
+  rider: {
+    id: string;
+    name: string;
+    phone: string;
+    avatarUrl: string | null;
+    location: { lat: number; lng: number; heading: number; updatedAt: string | null } | null;
+  } | null;
 };
 
 export const orderApi = {
@@ -1239,230 +908,222 @@ export const orderApi = {
     total: number,
     deliveryFee: number,
     distanceKm: number,
-    paymentMethod: CheckoutPaymentMethod = 'cash',
+    paymentMethod: CheckoutPaymentMethod = 'easypaisa',
     extra: { customerPhone?: string; customerEmail?: string; idempotencyKey?: string } = {},
   ): Promise<PlaceOrderResult> {
-    return withFallback(
-      async () => {
-        const restaurantId = items[0]?.restaurantId;
-        if (!restaurantId) throw new Error('Unknown restaurant');
+    // No fallback: a fabricated order would report a checkout success that no
+    // gateway ever confirmed.
+    const restaurantId = items[0]?.restaurantId;
+    if (!restaurantId) throw new Error('Unknown restaurant');
 
-        await httpPost('/cart', {
-          restaurantId,
-          items: items.map((i) => ({ foodItem: i.menuItem.id, quantity: i.quantity, note: i.specialInstructions })),
-        });
+    await httpPost('/cart', {
+      restaurantId,
+      items: items.map((i) => ({
+        foodItem: i.menuItem.id,
+        quantity: i.quantity,
+        note: i.specialInstructions,
+      })),
+    });
 
-        // Reuse an existing backend address when the selected one is real,
-        // otherwise persist the (otherwise local) delivery location first.
-        let addressId = /^[0-9a-f]{24}$/i.test(address.id) ? address.id : '';
-        if (!addressId) {
-          const created = await httpPost<{ address?: { _id?: unknown } }>('/customer/addresses', {
-            full: address.full,
-            area: address.area || address.full,
-            label: address.label || 'Saved',
-            tag: address.tagged ?? 'other',
-            lat: address.lat,
-            lng: address.lng,
-            isDefault: false,
-          });
-          addressId = String(created.data.address?._id ?? '');
-          if (!addressId) throw new Error('Could not save the delivery address');
-        }
+    // Reuse an existing backend address when the selected one is real,
+    // otherwise persist the (otherwise local) delivery location first.
+    let addressId = ID_RE.test(address.id) ? address.id : '';
+    if (!addressId) {
+      const created = await httpPost<{ address?: { _id?: unknown } }>('/customer/addresses', {
+        full: address.full,
+        area: address.area || address.full,
+        label: address.label || 'Saved',
+        tag: address.tagged ?? 'other',
+        lat: address.lat,
+        lng: address.lng,
+        isDefault: false,
+      });
+      addressId = String(created.data.address?._id ?? '');
+      if (!addressId) throw new Error('Could not save the delivery address');
+    }
 
-        const placed = await httpPost<{
-          order?: BackOrder;
-          payment?: { id?: unknown; status?: string; method?: string; amount?: number; currency?: string };
-          handoff?: PaymentHandoff | null;
-        }>('/orders', {
-          addressId,
-          // `card` is no longer offered: no card gateway is integrated.
-          paymentMethod,
-          note: '',
-          customerPhone: extra.customerPhone,
-          customerEmail: extra.customerEmail,
-          idempotencyKey: extra.idempotencyKey,
-        });
-        const orderId = String(placed.data.order?._id ?? '');
-        if (!orderId) throw new Error('Order was not created');
+    const placed = await httpPost<{
+      order?: BackOrder;
+      payment?: {
+        id?: unknown;
+        status?: string;
+        method?: string;
+        amount?: number;
+        currency?: string;
+      };
+      handoff?: PaymentHandoff | null;
+    }>('/orders', {
+      addressId,
+      // `card` is no longer offered: no card gateway is integrated.
+      paymentMethod,
+      note: '',
+      customerPhone: extra.customerPhone,
+      customerEmail: extra.customerEmail,
+      idempotencyKey: extra.idempotencyKey,
+    });
+    const orderId = String(placed.data.order?._id ?? '');
+    if (!orderId) throw new Error('Order was not created');
 
-        const detail = await httpGet<{ order?: BackOrder }>(`/orders/${orderId}`);
-        const raw = placed.data.payment;
-        return {
-          order: mapOrder(detail.data.order ?? ({} as BackOrder)),
-          payment: {
-            id: raw?.id ?? '',
-            status: raw?.status ?? 'pending',
-            method: raw?.method ?? paymentMethod,
-            amount: raw?.amount ?? total,
-            currency: raw?.currency ?? 'PKR',
-          },
-          // The server decides whether a redirect/form handoff is needed.
-          handoff: placed.data.handoff ?? null,
-        };
+    const detail = await httpGet<{ order?: BackOrder }>(`/orders/${orderId}`);
+    const raw = placed.data.payment;
+    return {
+      order: mapOrder(detail.data.order ?? ({} as BackOrder)),
+      payment: {
+        id: raw?.id ?? '',
+        status: raw?.status ?? 'pending',
+        method: raw?.method ?? paymentMethod,
+        amount: raw?.amount ?? total,
+        currency: raw?.currency ?? 'PKR',
       },
-      () => {
-        const restaurant = RESTAURANTS.find((r) => r.id === items[0]?.restaurantId) ?? RESTAURANTS[0]!;
-        return {
-          order: {
-            id: `SWT-${Math.floor(1000 + Math.random() * 9000)}`,
-            type: 'food' as const,
-            restaurantName: restaurant.name,
-            restaurantEmoji: restaurant.emoji,
-            restaurantGradient: restaurant.gradient,
-            items,
-            status: 'placed',
-            total,
-            deliveryFee,
-            distanceKm,
-            placedAt: new Date(),
-            estimatedMinutes: restaurant.deliveryTimeMin,
-            rider: RIDERS[0],
-            address: address.full,
-          },
-          payment: {
-            id: 'demo',
-            status: paymentMethod === 'cash' ? 'pending' : 'processing',
-            method: paymentMethod,
-            amount: total,
-            currency: 'PKR',
-          },
-          handoff: null,
-        };
-      },
-    );
+      // The server decides whether a redirect/form handoff is needed.
+      handoff: placed.data.handoff ?? null,
+    };
   },
 
   async getOrders(): Promise<Order[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ orders?: BackOrder[] }>('/orders');
-        return (res.data.orders ?? []).map(mapOrder);
-      },
-      () => demo(mockOrders()),
-    );
+    const res = await httpGet<{ orders?: BackOrder[] }>('/orders');
+    return (res.data.orders ?? []).map(mapOrder);
   },
 
   async trackOrder(id: string): Promise<Order> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ order?: BackOrder }>(`/orders/${id}`);
-        if (!res.data.order) throw new Error('Order not found');
-        return mapOrder(res.data.order);
-      },
-      async () => {
-        const orders = await orderApi.getOrders();
-        return orders.find((o) => o.id === id) ?? orders[0]!;
-      },
-    );
+    const res = await httpGet<{ order?: BackOrder }>(`/orders/${id}`);
+    if (!res.data.order) throw new Error('Order not found');
+    return mapOrder(res.data.order);
+  },
+
+  /**
+   * Live delivery tracking.
+   *
+   * The server decides whether a position may be returned: `trackingActive`
+   * is false and `rider.location` is null once the order is delivered or
+   * cancelled, so there is nothing for the client to accidentally leak.
+   */
+  async trackLive(id: string): Promise<OrderLiveTracking> {
+    const res = await httpGet<{
+      orderId?: string;
+      orderNumber?: string;
+      status?: string;
+      trackingActive?: boolean;
+      estimatedMinutes?: number;
+      rider?: {
+        id?: string;
+        name?: string;
+        phone?: string;
+        avatarUrl?: string | null;
+        location?: { lat?: number; lng?: number; heading?: number; updatedAt?: string } | null;
+      } | null;
+    }>(`/orders/${id}/track`);
+    const d = res.data;
+    return {
+      orderId: d.orderId ?? id,
+      status: (d.status ?? 'placed') as OrderStatus,
+      trackingActive: Boolean(d.trackingActive),
+      estimatedMinutes: d.estimatedMinutes ?? null,
+      rider: d.rider
+        ? {
+            id: String(d.rider.id ?? ''),
+            name: d.rider.name ?? 'Your rider',
+            phone: d.rider.phone ?? '',
+            avatarUrl: d.rider.avatarUrl ?? null,
+            location:
+              d.rider.location &&
+              typeof d.rider.location.lat === 'number' &&
+              typeof d.rider.location.lng === 'number'
+                ? {
+                    lat: d.rider.location.lat,
+                    lng: d.rider.location.lng,
+                    heading: d.rider.location.heading ?? 0,
+                    updatedAt: d.rider.location.updatedAt ?? null,
+                  }
+                : null,
+          }
+        : null,
+    };
   },
 };
 
-// Ride requests are delivered live over Socket.IO on the backend. The search
-// below is the simulated in-app version used until the socket feed is wired up.
-export const rideApiSearch: () => Promise<RideRequest[]> = async () => {
-  await delay(900);
-  return [
-    {
-      id: 'req_01',
-      type: 'ride',
-      pickup: 'Mingora Bus Stand',
-      dropoff: 'Fizagat Park',
-      distanceKm: 3.4,
-      durationMin: 14,
-      fare: 210,
-      customerName: 'Ahmad Khan',
-      customerRating: 4.8,
-      vehicle: 'bike',
-      createdAt: new Date(),
-    },
-    {
-      id: 'req_02',
-      type: 'ride',
-      pickup: 'Saidu Sharif Chowk',
-      dropoff: 'Green Valley Mall',
-      distanceKm: 2.2,
-      durationMin: 9,
-      fare: 150,
-      customerName: 'Zara Bibi',
-      customerRating: 4.9,
-      vehicle: 'rickshaw',
-      createdAt: new Date(Date.now() - 2 * 60_000),
-    },
-    {
-      id: 'req_03',
-      type: 'food',
-      pickup: 'Chowkara Chapli House',
-      dropoff: 'Green View Colony, Mingora',
-      distanceKm: 1.6,
-      durationMin: 7,
-      fare: 90,
-      customerName: 'Bilal Khan',
-      customerRating: 4.7,
-      vehicle: 'bike',
-      createdAt: new Date(Date.now() - 1 * 60_000),
-    },
-    {
-      id: 'req_04',
-      type: 'food',
-      pickup: 'Dastarkhwan Biryani',
-      dropoff: 'Saidu Teaching Hospital',
-      distanceKm: 2.8,
-      durationMin: 12,
-      fare: 130,
-      customerName: 'Mahnoor Zahid',
-      customerRating: 4.6,
-      vehicle: 'bike',
-      createdAt: new Date(Date.now() - 4 * 60_000),
-    },
-  ];
+// Ride requests: delivered live over Socket.IO on the backend (ride:request)
+// and mirrored by GET /rides/available so riders who open the feed late still
+// see the current pool.
+type BackPopulatedUser = { _id?: string; name?: string } | string | null | undefined;
+
+type BackAvailableRide = {
+  _id: string;
+  rideNumber?: string | null;
+  customer?: BackPopulatedUser;
+  type?: 'swat_moto' | 'swat_city' | 'swat_van';
+  pickup?: { address?: string; area?: string | null } | null;
+  dropoff?: { address?: string; area?: string | null } | null;
+  distanceKm?: number;
+  durationMin?: number;
+  fare?: number;
+  riderPayout?: number;
+  createdAt?: string;
 };
 
-const FALLBACK_FEED: DeliveryFeedItem[] = [
-  {
-    id: 'feed_01',
-    kind: 'ride',
-    pickup: 'Mingora Bus Stand',
-    dropoff: 'Fizagat Park',
-    distanceKm: 3.4,
-    durationMin: 14,
-    payout: 170,
-    createdAt: new Date(),
-  },
-  {
-    id: 'feed_02',
-    kind: 'food',
-    pickup: 'Chowkara Chapli House',
-    dropoff: 'Green View Colony, Mingora',
-    distanceKm: 1.6,
-    durationMin: 9,
-    payout: 90,
-    restaurantEmoji: '🥙',
-    restaurantGradient: ['#B05E1F', '#54250A'],
-    createdAt: new Date(Date.now() - 3 * 60_000),
-  },
-  {
-    id: 'feed_03',
-    kind: 'food',
-    pickup: 'Dastarkhwan Biryani',
-    dropoff: 'Saidu Teaching Hospital',
-    distanceKm: 2.8,
-    durationMin: 13,
-    payout: 130,
-    restaurantEmoji: '🍛',
-    restaurantGradient: ['#7A3B10', '#351603'],
-    createdAt: new Date(Date.now() - 6 * 60_000),
-  },
-  {
-    id: 'feed_04',
-    kind: 'ride',
-    pickup: 'Saidu Sharif Chowk',
-    dropoff: 'Green Valley Mall',
-    distanceKm: 2.2,
-    durationMin: 10,
-    payout: 120,
-    createdAt: new Date(Date.now() - 12 * 60_000),
-  },
-];
+const RIDE_VEHICLE: Record<string, VehicleType> = {
+  swat_moto: 'bike',
+  swat_city: 'rickshaw',
+  swat_van: 'van',
+};
+
+// Maps a backend ride document (GET /rides/available) into the feed item. The
+// payout is whatever the server says (`riderPayout`); the 76% split here is
+// only the fallback for responses created before that column existed.
+const mapRideRequest = (r: BackAvailableRide): RideRequest => {
+  const customer = typeof r.customer === 'string' ? undefined : r.customer;
+  return {
+    id: r._id,
+    type: 'ride',
+    pickup: r.pickup?.address ?? 'Pickup point',
+    dropoff: r.dropoff?.address ?? 'Destination',
+    distanceKm: Number(r.distanceKm ?? 0),
+    durationMin: Number(r.durationMin ?? 0),
+    fare: Number(r.fare ?? 0),
+    payout: Number(r.riderPayout ?? Math.round(Number(r.fare ?? 0) * 0.76)),
+    customerName: customer?.name ?? 'Customer',
+    customerRating: 5,
+    vehicle: RIDE_VEHICLE[r.type ?? 'swat_moto'] ?? 'bike',
+    createdAt: r.createdAt ? new Date(r.createdAt) : new Date(),
+  };
+};
+
+// Maps the ride:request socket payload broadcast when a customer books a ride.
+type SocketRideRequest = {
+  rideId: string;
+  type?: 'swat_moto' | 'swat_city' | 'swat_van';
+  pickup?: { address?: string; area?: string | null } | null;
+  dropoff?: { address?: string; area?: string | null } | null;
+  distanceKm?: number;
+  durationMin?: number;
+  fare?: number;
+  createdAt?: string;
+};
+
+const mapSocketRideRequest = (r: SocketRideRequest): RideRequest => ({
+  id: r.rideId,
+  type: 'ride',
+  pickup: r.pickup?.address ?? 'Pickup point',
+  dropoff: r.dropoff?.address ?? 'Destination',
+  distanceKm: Number(r.distanceKm ?? 0),
+  durationMin: Number(r.durationMin ?? 0),
+  fare: Number(r.fare ?? 0),
+  payout: Number(Math.round(Number(r.fare ?? 0) * 0.76)),
+  customerName: 'New request',
+  customerRating: 5,
+  vehicle: RIDE_VEHICLE[r.type ?? 'swat_moto'] ?? 'bike',
+  createdAt: r.createdAt ? new Date(r.createdAt) : new Date(),
+});
+
+// Turns a ride:request socket payload into a feed item, or null when the
+// payload is not a well-formed ride request (so a mis-fire never crashes the
+// list renderer).
+export const rideRequestFromSocket = (payload: unknown): RideRequest | null => {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as SocketRideRequest;
+  if (typeof p.rideId !== 'string' || !p.rideId) return null;
+  return mapSocketRideRequest(p);
+};
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
 
@@ -1481,37 +1142,15 @@ function buildEarningsDays(transactions: BackWalletTx[]): { day: string; amount:
   return DAY_LABELS.map((day, i) => ({ day, amount: buckets[i]! }));
 }
 
-const FALLBACK_EARNINGS: {
-  stats: RiderStats;
-  period: RiderEarningsPeriod;
-  days: { day: string; amount: number }[];
-} = {
-  stats: { rating: 4.9, completed: 1286, acceptance: 96, satisfaction: 98, totalKm: 4120 },
-  period: { label: 'This week', amount: 21450, trips: 42, hoursOnline: 38, onTime: 97 },
-  days: [
-    { day: 'Mon', amount: 3200 },
-    { day: 'Tue', amount: 2850 },
-    { day: 'Wed', amount: 4100 },
-    { day: 'Thu', amount: 2600 },
-    { day: 'Fri', amount: 3500 },
-    { day: 'Sat', amount: 3000 },
-    { day: 'Sun', amount: 2200 },
-  ],
-};
-
-export const riderApi = {
+export const riderFeedApi = {
   async getFeed(): Promise<DeliveryFeedItem[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ feed?: BackFeedItem[] }>('/rider/feed');
-        return (res.data.feed ?? []).map(mapFeedItem);
-      },
-      () => demo(FALLBACK_FEED),
-    );
+    const res = await httpGet<{ feed?: BackFeedItem[] }>('/rider/feed');
+    return (res.data.feed ?? []).map(mapFeedItem);
   },
 
   async getRequests(): Promise<RideRequest[]> {
-    return rideApiSearch();
+    const res = await httpGet<{ rides?: BackAvailableRide[] }>('/rides/available');
+    return (res.data.rides ?? []).map(mapRideRequest);
   },
 
   async getEarnings(): Promise<{
@@ -1519,132 +1158,488 @@ export const riderApi = {
     period: RiderEarningsPeriod;
     days: { day: string; amount: number }[];
   }> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{
-          stats?: { rating?: number; completed?: number; acceptance?: number; satisfaction?: number; totalKm?: number };
-          period?: { label?: string; amount?: number; trips?: number; hoursOnline?: number; onTime?: number };
-          transactions?: BackWalletTx[];
-        }>('/rider/earnings');
-        return {
-          stats: {
-            rating: Number(res.data.stats?.rating ?? 0),
-            completed: Number(res.data.stats?.completed ?? 0),
-            acceptance: Number(res.data.stats?.acceptance ?? 0),
-            satisfaction: Number(res.data.stats?.satisfaction ?? 0),
-            totalKm: Number(res.data.stats?.totalKm ?? 0),
-          },
-          period: {
-            label: res.data.period?.label ?? 'This week',
-            amount: Number(res.data.period?.amount ?? 0),
-            trips: Number(res.data.period?.trips ?? 0),
-            hoursOnline: Number(res.data.period?.hoursOnline ?? 0),
-            onTime: Number(res.data.period?.onTime ?? 0),
-          },
-          days: buildEarningsDays(res.data.transactions ?? []),
-        };
+    const res = await httpGet<{
+      stats?: {
+        rating?: number;
+        completed?: number;
+        acceptance?: number;
+        satisfaction?: number;
+        totalKm?: number;
+      };
+      period?: {
+        label?: string;
+        amount?: number;
+        trips?: number;
+        hoursOnline?: number;
+        onTime?: number;
+      };
+      transactions?: BackWalletTx[];
+    }>('/rider/earnings');
+    return {
+      stats: {
+        rating: Number(res.data.stats?.rating ?? 0),
+        completed: Number(res.data.stats?.completed ?? 0),
+        acceptance: Number(res.data.stats?.acceptance ?? 0),
+        satisfaction: Number(res.data.stats?.satisfaction ?? 0),
+        totalKm: Number(res.data.stats?.totalKm ?? 0),
       },
-      () => demo(FALLBACK_EARNINGS),
-    );
+      period: {
+        label: res.data.period?.label ?? 'This week',
+        amount: Number(res.data.period?.amount ?? 0),
+        trips: Number(res.data.period?.trips ?? 0),
+        hoursOnline: Number(res.data.period?.hoursOnline ?? 0),
+        onTime: Number(res.data.period?.onTime ?? 0),
+      },
+      days: buildEarningsDays(res.data.transactions ?? []),
+    };
   },
 };
 
-const FALLBACK_WALLET: { balance: number; transactions: WalletTx[] } = {
-  balance: 4860,
-  transactions: [
-    { id: 'w_1', kind: 'debit', title: 'Swat Grill House', subtitle: 'Food order · SWT-4821', amount: 640, at: new Date(Date.now() - 3 * HOUR) },
-    { id: 'w_2', kind: 'debit', title: 'Swat City Ride', subtitle: 'Trip to Fizagat Park', amount: 210, at: new Date(Date.now() - 1 * DAY) },
-    { id: 'w_3', kind: 'credit', title: 'Cash back reward', subtitle: 'Referral bonus', amount: 200, at: new Date(Date.now() - 2 * DAY) },
-    { id: 'w_4', kind: 'debit', title: 'Kalam Valley Pizza', subtitle: 'Food order · SWT-4710', amount: 830, at: new Date(Date.now() - 3 * DAY) },
-    { id: 'w_5', kind: 'credit', title: 'Wallet top-up', subtitle: 'JazzCash transfer', amount: 1500, at: new Date(Date.now() - 4 * DAY) },
-    { id: 'w_6', kind: 'debit', title: 'Kashmiri Chai', subtitle: 'Food order · SWT-4688', amount: 240, at: new Date(Date.now() - 5 * DAY) },
-  ],
+// ---------------------------------------------------------------------------
+// Ride lifecycle (the trip a customer books or a rider accepts)
+// ---------------------------------------------------------------------------
+
+export type RideDetail = {
+  id: string;
+  rideNumber: string;
+  status: string;
+  type: RideType;
+  vehicle: VehicleType;
+  pickup: { address: string; lat: number; lng: number };
+  dropoff: { address: string; lat: number; lng: number };
+  distanceKm: number;
+  durationMin: number;
+  /** Server-computed fare the customer pays. */
+  fare: number;
+  /** Server-computed share that lands in the rider's wallet on completion. */
+  riderPayout: number;
+  paymentMethod: string;
+  cancelReason?: string;
+  customer: { id: string; name: string; phone: string };
+  rider: { id: string; name: string; phone: string; avatarUrl?: string | null } | null;
+  createdAt: Date;
 };
 
-export const walletApi = async (): Promise<{ balance: number; transactions: WalletTx[] }> =>
-  withFallback(
-    async () => {
-      const res = await httpGet<{ wallet?: { balance?: number }; transactions?: BackWalletTx[] }>(
-        '/wallet/transactions',
-      );
-      return {
-        balance: Number(res.data.wallet?.balance ?? 0),
-        transactions: (res.data.transactions ?? []).map(mapWalletTx),
-      };
+const mapRideDetail = (r: BackRide): RideDetail => {
+  const customer = typeof r.customer === 'string' ? undefined : r.customer;
+  return {
+    id: String(r._id ?? ''),
+    rideNumber: r.rideNumber ?? '',
+    status: r.status ?? 'searching',
+    type: (r.type ?? 'swat_city') as RideType,
+    vehicle: RIDE_VEHICLE[r.vehicle ?? r.type ?? 'swat_city'] ?? 'bike',
+    pickup: {
+      address: r.pickup?.address ?? '',
+      lat: Number(r.pickup?.lat ?? 0),
+      lng: Number(r.pickup?.lng ?? 0),
     },
-    () => demo(FALLBACK_WALLET),
-  );
+    dropoff: {
+      address: r.dropoff?.address ?? '',
+      lat: Number(r.dropoff?.lat ?? 0),
+      lng: Number(r.dropoff?.lng ?? 0),
+    },
+    distanceKm: Number(r.distanceKm ?? 0),
+    durationMin: Number(r.durationMin ?? 0),
+    fare: Number(r.fare ?? 0),
+    riderPayout: Number(r.riderPayout ?? 0),
+    paymentMethod: r.paymentMethod ?? 'cash',
+    cancelReason: r.cancelReason ?? undefined,
+    customer: {
+      id: customer?._id !== undefined ? String(customer._id) : String(r.customer ?? ''),
+      name: customer?.name ?? 'Customer',
+      phone: customer?.phone ?? '',
+    },
+    rider: r.rider && typeof r.rider === 'object'
+      ? {
+          id: String(r.rider._id ?? ''),
+          name: r.rider.name ?? 'Your rider',
+          phone: r.rider.phone ?? '',
+          avatarUrl: r.rider.avatarUrl ?? null,
+        }
+      : null,
+    createdAt: r.createdAt ? new Date(r.createdAt) : new Date(),
+  };
+};
 
-const FALLBACK_FAVORITES: Favorite[] = [
-  { id: 'fav_1', kind: 'restaurant', refId: 'rest_03', name: 'Chowkara Chapli House', subtitle: 'Chapli Kabab • Swat Special', rating: 4.9, gradient: ['#B05E1F', '#54250A'], emoji: '🥩', savedAt: new Date(Date.now() - 6 * DAY) },
-  { id: 'fav_2', kind: 'food', refId: 'm_021', name: 'Chicken Karahi (Half)', subtitle: 'Swati Karahi Khana', rating: 4.8, price: 850, gradient: ['#93341D', '#3C0F05'], emoji: '🍲', savedAt: new Date(Date.now() - 10 * DAY) },
-  { id: 'fav_3', kind: 'restaurant', refId: 'rest_04', name: 'Trout Point Cafe', subtitle: 'Trout • Continental', rating: 4.6, gradient: ['#2B7A78', '#0B3B39'], emoji: '🐟', savedAt: new Date(Date.now() - 15 * DAY) },
-  { id: 'fav_4', kind: 'food', refId: 'm_081', name: 'Gajar ka Halwa', subtitle: 'Shringar Sweets & Desserts', rating: 4.9, price: 220, gradient: ['#B3543A', '#52160C'], emoji: '🥕', savedAt: new Date(Date.now() - 20 * DAY) },
-];
+/**
+ * The full ride lifecycle, driven by `RIDE_STATUSES` on the backend:
+ * searching → accepted → arriving → started → completed (or cancelled).
+ *
+ * - `book` turns a confirmed route into a real ride and broadcasts it to riders.
+ * - `detail` is the polling source for both customer and rider screens.
+ * - `advance` is rider-only; the same endpoint also notifies the other side.
+ * - `cancelCustomer` / `cancelRider` are role-gated by the server.
+ */
+export const rideApi = {
+  /** Server-authoritative fare preview for a route (auth required). */
+  async estimate(input: {
+    type: RideType;
+    pickup: { lat: number; lng: number };
+    dropoff: { lat: number; lng: number };
+  }) {
+    const res = await httpPost<{
+      type?: string;
+      vehicle?: string;
+      distanceKm?: number;
+      durationMin?: number;
+      baseFare?: number;
+      distanceFare?: number;
+      fare?: number;
+    }>('/rides/estimate', input);
+    return {
+      distanceKm: Number(res.data.distanceKm ?? 0),
+      durationMin: Number(res.data.durationMin ?? 0),
+      fare: Number(res.data.fare ?? 0),
+    };
+  },
+
+  /** Creates the ride (fare computed server-side) and broadcasts ride:request. */
+  async book(input: {
+    type: RideType;
+    pickup: { address: string; lat: number; lng: number };
+    dropoff: { address: string; lat: number; lng: number };
+    paymentMethod?: 'cash' | 'wallet';
+  }): Promise<RideDetail> {
+    const res = await httpPost<{ ride?: BackRide }>('/rides', input);
+    if (!res.data.ride) throw new Error('Ride was not created');
+    return mapRideDetail(res.data.ride);
+  },
+
+  /** Poll-friendly ride detail (also carries fresh rider/customer data). */
+  async detail(id: string): Promise<RideDetail> {
+    const res = await httpGet<{ ride?: BackRide }>(`/rides/${id}`);
+    if (!res.data.ride) throw new Error('Ride not found');
+    return mapRideDetail(res.data.ride);
+  },
+
+  /** Rider-only: move the ride along (arriving → started → completed). */
+  async advance(id: string, status: 'arriving' | 'started' | 'completed'): Promise<RideDetail> {
+    const res = await httpPatch<{ ride?: BackRide }>(`/rides/${id}/status`, { status });
+    if (!res.data.ride) throw new Error('Ride status could not be updated');
+    return mapRideDetail(res.data.ride);
+  },
+
+  /** Customer cancels their own ride before it completes. */
+  async cancelCustomer(id: string, reason: string): Promise<void> {
+    await httpPost(`/rides/${id}/cancel`, { reason });
+  },
+
+  /** Rider drops an accepted ride (before starting it). */
+  async cancelRider(id: string, reason: string): Promise<void> {
+    await httpPost(`/rides/${id}/cancel-rider`, { reason });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Rider delivery jobs (the food leg, served by /rider/jobs)
+// ---------------------------------------------------------------------------
+
+export type RiderJobOrder = {
+  id: string;
+  orderNumber: string;
+  status: string;
+  restaurant: { name: string; emoji?: string; area?: string; address?: string };
+  dropoff: string;
+  dropoffLat: number;
+  dropoffLng: number;
+  customer: { name: string; phone: string };
+  itemNames: string[];
+  itemCount: number;
+  distanceKm: number;
+  durationMin: number;
+  payout: number;
+  total: number;
+  createdAt: Date;
+};
+
+type BackRiderJobOrder = {
+  _id?: unknown;
+  orderNumber?: string;
+  status?: string;
+  items?: { name?: string; quantity?: number }[];
+  distanceKm?: number;
+  estimatedMinutes?: number;
+  riderPayout?: number;
+  total?: number;
+  addressSnapshot?: { full?: string; lat?: number | null; lng?: number | null };
+  customer?: { name?: string; phone?: string } | string | null;
+  restaurant?:
+    | { name?: string; emoji?: string; area?: string; addressLine?: string }
+    | string
+    | null;
+  createdAt?: string | Date;
+};
+
+const mapRiderJobOrder = (o: BackRiderJobOrder): RiderJobOrder => {
+  const restaurant = typeof o.restaurant === 'object' && o.restaurant ? o.restaurant : undefined;
+  const customer = typeof o.customer === 'object' && o.customer ? o.customer : undefined;
+  return {
+    id: String(o._id ?? ''),
+    orderNumber: o.orderNumber ?? '',
+    status: o.status ?? 'rider_assigned',
+    restaurant: {
+      name: restaurant?.name ?? 'Restaurant',
+      emoji: restaurant?.emoji,
+      area: restaurant?.area,
+      address: restaurant?.addressLine,
+    },
+    dropoff: o.addressSnapshot?.full ?? '',
+    dropoffLat: Number(o.addressSnapshot?.lat ?? 0),
+    dropoffLng: Number(o.addressSnapshot?.lng ?? 0),
+    customer: { name: customer?.name ?? 'Customer', phone: customer?.phone ?? '' },
+    itemNames: (o.items ?? []).map((i) => i.name ?? ''),
+    itemCount: (o.items ?? []).reduce((s, i) => s + Number(i.quantity ?? 1), 0),
+    distanceKm: Number(o.distanceKm ?? 0),
+    durationMin: Number(o.estimatedMinutes ?? 0),
+    payout: Number(o.riderPayout ?? 0),
+    total: Number(o.total ?? 0),
+    createdAt: o.createdAt ? new Date(o.createdAt) : new Date(),
+  };
+};
+
+/** Active delivery jobs: orders assigned to this rider + rides in progress. */
+export const jobApi = {
+  /** Poll-friendly snapshot of everything the rider currently owns. */
+  async jobs(): Promise<{ orders: RiderJobOrder[]; rides: RideDetail[] }> {
+    const res = await httpGet<{ orders?: BackRiderJobOrder[]; rides?: BackRide[] }>('/rider/jobs');
+    return {
+      orders: (res.data.orders ?? []).map(mapRiderJobOrder),
+      rides: (res.data.rides ?? []).map(mapRideDetail),
+    };
+  },
+
+  /** Accepts a ready food order from the pickup pool. */
+  async acceptFood(orderId: string): Promise<void> {
+    await httpPost('/rider/jobs/accept', { orderId });
+  },
+
+  /** Advances the delivery leg: picked_up → on_the_way → delivered. */
+  async updateDelivery(
+    orderId: string,
+    status: 'picked_up' | 'on_the_way' | 'delivered',
+  ): Promise<void> {
+    await httpPost('/rider/jobs/delivery', { orderId, status });
+  },
+};
+
+// Real ride acceptance (rider side). An accept must actually claim the ride on
+// the server, so there is no fallback. The claimed ride comes back so the
+// caller can hand its id to the active-delivery screen.
+export const acceptRide = async (rideId: string): Promise<RideDetail> => {
+  const res = await httpPost<{ ride?: BackRide }>('/rides/accept', { rideId });
+  if (!res.data.ride) throw new Error('Ride could not be accepted');
+  return mapRideDetail(res.data.ride);
+};
+
+export const walletApi = async (): Promise<{ balance: number; transactions: WalletTx[] }> => {
+  const res = await httpGet<{ wallet?: { balance?: number }; transactions?: BackWalletTx[] }>(
+    '/wallet/transactions',
+  );
+  return {
+    balance: Number(res.data.wallet?.balance ?? 0),
+    transactions: (res.data.transactions ?? []).map(mapWalletTx),
+  };
+};
+
+// Wallet-to-wallet transfer by recipient phone. No fallback — a fake success
+// here would silently pretend funds moved.
+export const walletTransfer = async (phone: string, amount: number): Promise<number> => {
+  const res = await httpPost<{ wallet?: { balance?: number } }>('/wallet/transfer', {
+    phone,
+    amount,
+  });
+  return Number(res.data.wallet?.balance ?? 0);
+};
+
+// Rider cash deposit: logs COD cash collected on deliveries into earnings.
+export const walletCashIn = async (amount: number): Promise<number> => {
+  const res = await httpPost<{ wallet?: { balance?: number } }>('/wallet/cash-in', { amount });
+  return Number(res.data.wallet?.balance ?? 0);
+};
+
+// ---------------------------------------------------------------------------
+// Wallet top-up (Easypaisa MA) + rider withdrawals
+// ---------------------------------------------------------------------------
+
+export type WalletTopup = {
+  id: string;
+  status: string;
+  method?: string;
+  amount: number;
+  currency?: string;
+  transactionRef?: string;
+  gatewayRef?: string | null;
+  failureReason?: string | null;
+};
+
+type BackWithdrawal = {
+  _id?: unknown;
+  reference?: string;
+  amount?: number;
+  status?: string;
+  destinationType?: string;
+  destination?: string;
+  destinationHolder?: string;
+  rejectReason?: string | null;
+  payoutReference?: string | null;
+  createdAt?: string | Date;
+};
+
+export type WalletWithdrawal = {
+  id: string;
+  reference: string;
+  amount: number;
+  status: 'pending' | 'approved' | 'processing' | 'paid' | 'rejected' | 'cancelled';
+  destinationType: 'easypaisa' | 'bank';
+  destination: string;
+  destinationHolder: string;
+  rejectReason?: string;
+  payoutReference?: string;
+  createdAt: Date;
+};
+
+const mapTopup = (p: unknown): WalletTopup => {
+  const raw = (p ?? {}) as Record<string, unknown>;
+  return {
+    id: String(raw.id ?? raw._id ?? ''),
+    status: String(raw.status ?? 'pending'),
+    method: raw.method ? String(raw.method) : undefined,
+    amount: Number(raw.amount ?? 0),
+    currency: raw.currency ? String(raw.currency) : undefined,
+    transactionRef: raw.transactionRef ? String(raw.transactionRef) : undefined,
+    gatewayRef: raw.gatewayRef != null ? String(raw.gatewayRef) : null,
+    failureReason: raw.failureReason != null ? String(raw.failureReason) : null,
+  };
+};
+
+const mapWithdrawal = (w: BackWithdrawal): WalletWithdrawal => ({
+  id: String(w._id ?? ''),
+  reference: w.reference ?? '',
+  amount: Number(w.amount ?? 0),
+  status: (w.status ?? 'pending') as WalletWithdrawal['status'],
+  destinationType: w.destinationType === 'bank' ? 'bank' : 'easypaisa',
+  destination: w.destination ?? '',
+  destinationHolder: w.destinationHolder ?? '',
+  rejectReason: w.rejectReason ?? undefined,
+  payoutReference: w.payoutReference ?? undefined,
+  createdAt: new Date(w.createdAt ?? Date.now()),
+});
+
+export const topupIdempotencyKey = (): string =>
+  `topup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+// Creates the top-up payment + gateway initiation. Money paths never use demo
+// fallback — a fake "paid" here would pretend real funds landed.
+export const walletTopupCreate = async (
+  amount: number,
+  customerPhone?: string,
+  idempotencyKey?: string,
+): Promise<{ configured: boolean; message?: string; payment: WalletTopup | null }> => {
+  const res = await httpPost<{ configured?: boolean; message?: string; payment?: unknown }>(
+    '/wallet/topup',
+    {
+      amount,
+      customerPhone,
+      idempotencyKey,
+    },
+  );
+  return {
+    configured: Boolean(res.data.configured ?? true),
+    message: res.data.message,
+    payment: res.data.payment ? mapTopup(res.data.payment) : null,
+  };
+};
+
+export const walletTopupVerify = async (
+  paymentId?: string,
+): Promise<{ payment: WalletTopup | null; result: { status: string; reason?: string } }> => {
+  const res = await httpPost<{ payment?: unknown; result?: { status?: string; reason?: string } }>(
+    '/wallet/topup/verify',
+    { paymentId },
+  );
+  return {
+    payment: res.data.payment ? mapTopup(res.data.payment) : null,
+    result: { status: res.data.result?.status ?? 'pending', reason: res.data.result?.reason },
+  };
+};
+
+export const walletTopupStatus = async (): Promise<{
+  payment: WalletTopup | null;
+  balance: number;
+}> => {
+  const res = await httpGet<{ payment?: unknown; wallet?: { balance?: number } }>(
+    '/wallet/topup/status',
+  );
+  return {
+    payment: res.data.payment ? mapTopup(res.data.payment) : null,
+    balance: Number(res.data.wallet?.balance ?? 0),
+  };
+};
+
+// Rider withdrawal request — reserves the amount server-side.
+export const withdrawalRequest = async (input: {
+  amount: number;
+  destinationType: 'easypaisa' | 'bank';
+  destination: string;
+  destinationHolder: string;
+  note?: string;
+}): Promise<void> => {
+  await httpPost('/wallet/withdraw', input);
+};
+
+export const withdrawalsMine = async (): Promise<{
+  withdrawals: WalletWithdrawal[];
+  pendingAmount: number;
+  totalWithdrawn: number;
+}> => {
+  const res = await httpGet<{
+    withdrawals?: BackWithdrawal[];
+    pendingAmount?: number;
+    totalWithdrawn?: number;
+  }>('/wallet/withdrawals');
+  return {
+    withdrawals: (res.data.withdrawals ?? []).map(mapWithdrawal),
+    pendingAmount: Number(res.data.pendingAmount ?? 0),
+    totalWithdrawn: Number(res.data.totalWithdrawn ?? 0),
+  };
+};
+
+export const cancelWithdrawal = async (id: string): Promise<void> => {
+  await httpPost(`/wallet/withdrawals/${encodeURIComponent(id)}/cancel`);
+};
 
 export const favoriteApi = {
   async get(): Promise<Favorite[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ favorites?: BackFavorite[] }>('/customer/favorites');
-        return (res.data.favorites ?? []).map(mapFavorite);
-      },
-      () => demo(FALLBACK_FAVORITES),
-    );
+    const res = await httpGet<{ favorites?: BackFavorite[] }>('/customer/favorites');
+    return (res.data.favorites ?? []).map(mapFavorite);
+  },
+
+  /** Removes a saved favorite. The backend fixture id is the favorite row id. */
+  async remove(id: string): Promise<void> {
+    await httpDelete(`/customer/favorites/${encodeURIComponent(id)}`);
   },
 };
-
-const FALLBACK_NOTIFICATIONS: AppNotification[] = [
-  { id: 'n_1', kind: 'order', title: 'Order delivered!', body: 'Your Swat Grill House order was delivered by Shahid.', at: new Date(Date.now() - 2 * HOUR), read: false },
-  { id: 'n_2', kind: 'ride', title: 'Ride completed', body: 'Trip to Fizagat Park completed. Rate Bilal 5 stars.', at: new Date(Date.now() - 6 * HOUR), read: false },
-  { id: 'n_3', kind: 'promo', title: 'Free delivery weekend', body: 'Rs 0 delivery fee on orders above Rs 800 this weekend.', at: new Date(Date.now() - 22 * HOUR), read: true },
-  { id: 'n_4', kind: 'system', title: 'Wallet updated', body: 'Rs 200 cashback credited to your Swat Wallet.', at: new Date(Date.now() - 2 * DAY), read: true },
-  { id: 'n_5', kind: 'promo', title: 'Welcome to Swat City', body: 'Use code SWAT10 for 10% off your first order.', at: new Date(Date.now() - 6 * DAY), read: true },
-];
 
 export const notificationApi = {
   async get(): Promise<AppNotification[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ notifications?: BackNotification[] }>('/notifications');
-        return (res.data.notifications ?? []).map(mapNotification);
-      },
-      () => demo(FALLBACK_NOTIFICATIONS),
-    );
+    const res = await httpGet<{ notifications?: BackNotification[] }>('/notifications');
+    return (res.data.notifications ?? []).map(mapNotification);
   },
 
   async markAllRead(): Promise<void> {
-    try {
-      await httpPost('/notifications/mark-all-read', {});
-    } catch {
-      await delay(200);
-    }
+    await httpPost('/notifications/mark-all-read', {});
   },
 };
 
-const FALLBACK_ACTIVITIES: ActivityItem[] = [
-  { id: 'a_1', kind: 'food', title: 'Swat Grill House', subtitle: 'Order #SWT-4821 · Delivered', amount: 640, at: new Date(Date.now() - 3 * HOUR), status: 'Delivered' },
-  { id: 'a_2', kind: 'ride', title: 'Swat City Ride', subtitle: 'Mingora → Fizagat Park · Completed', amount: 210, at: new Date(Date.now() - 5 * HOUR), status: 'Completed' },
-  { id: 'a_3', kind: 'payment', title: 'Cashback reward', subtitle: 'Referred a friend · Credited', amount: 200, at: new Date(Date.now() - 1 * DAY), status: 'Credited' },
-  { id: 'a_4', kind: 'food', title: 'Kalam Valley Pizza Co.', subtitle: 'Order #SWT-4710 · Delivered', amount: 830, at: new Date(Date.now() - 3 * DAY), status: 'Delivered' },
-  { id: 'a_5', kind: 'food', title: 'Kashmiri Chai', subtitle: 'Order #SWT-4688 · Cancelled', amount: 240, at: new Date(Date.now() - 5 * DAY), status: 'Cancelled' },
-  { id: 'a_6', kind: 'ride', title: 'Swat Van', subtitle: 'Mingora → Kalam · Completed', amount: 720, at: new Date(Date.now() - 8 * DAY), status: 'Completed' },
-];
-
 export const activityApi = {
   async get(): Promise<ActivityItem[]> {
-    return withFallback(
-      async () => {
-        const res = await httpGet<{ activities?: BackActivity[] }>('/customer/activities');
-        return (res.data.activities ?? []).map(mapActivity);
-      },
-      () => demo(FALLBACK_ACTIVITIES),
-    );
+    const res = await httpGet<{ activities?: BackActivity[] }>('/customer/activities');
+    return (res.data.activities ?? []).map(mapActivity);
   },
 };
 
 export function estimateFare(km: number, rideType: RideType = 'swat_city'): number {
-  const fare = RIDE_FARES.find((f) => f.rideType === rideType) ?? RIDE_FARES[1]!;
+  const fare = FARE_DEFAULTS[rideType] ?? FARE_DEFAULTS.swat_city;
   return Math.round((fare.base + fare.perKm * km) / 10) * 10;
 }
 

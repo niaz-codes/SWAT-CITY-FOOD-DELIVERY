@@ -57,7 +57,7 @@ export function RiderProfileScreen({ embedded }: { embedded?: boolean }) {
   const { colors } = useThemeColors();
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
-  const { logout, switchToCustomer } = useAuth();
+  const { logout } = useAuth();
   const { dark: darkMode, toggle: toggleTheme, hydrated: hydratedTheme } = useAppTheme();
   const { success, error } = useToast();
   // The provider is the single source of truth for the profile so the GPS
@@ -433,7 +433,11 @@ export function RiderProfileScreen({ embedded }: { embedded?: boolean }) {
             icon="swap-horizontal-outline"
             label="Switch to customer mode"
             onPress={() => {
-              switchToCustomer().then(() => navigation.navigate('Main'));
+              // Opens the customer shell. The account keeps its rider role on
+              // the server, so this is a view change only - there is no
+              // backend "switch role" endpoint to call here.
+              haptics.light();
+              navigation.navigate('Main');
             }}
           />
           <Divider spacing={0} />
@@ -446,7 +450,7 @@ export function RiderProfileScreen({ embedded }: { embedded?: boolean }) {
         </View>
 
         <AppText variant="micro" color={colors.textMuted} style={styles.version}>
-          Swat City Partner · v1.0.0
+          Swat City Food Delivery Partner · v1.0.0
         </AppText>
       </ScrollView>
 

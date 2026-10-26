@@ -78,10 +78,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <Animated.View
-        pointerEvents="box-none"
-        style={[styles.container, { top: insets.top + 8 }]}
-      >
+      <Animated.View pointerEvents="box-none" style={[styles.container, { top: insets.top + 8 }]}>
         {items.map((item) => {
           const tint = colorFor(item.type);
           return (
@@ -96,7 +93,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 onPress={() => setItems((prev) => prev.filter((t) => t.id !== item.id))}
               >
                 <Ionicons name={ICON[item.type]} size={20} color={tint} />
-                <AppText variant="smallMedium" color={colors.textPrimary} style={styles.message} numberOfLines={2}>
+                <AppText
+                  variant="smallMedium"
+                  color={colors.textPrimary}
+                  style={styles.message}
+                  numberOfLines={2}
+                >
                   {item.message}
                 </AppText>
               </Pressable>
@@ -107,8 +109,6 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     </ToastContext.Provider>
   );
 }
-
-const timingDuration = 220;
 
 const styles = StyleSheet.create({
   container: {

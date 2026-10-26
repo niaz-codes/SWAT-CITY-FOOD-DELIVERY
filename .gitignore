@@ -4,8 +4,12 @@ dist/
 web-build/
 *.log
 .DS_Store
+# Never commit environment files with real credentials.
+# Example files stay visible so a new machine knows which names to fill in.
 .env
-.env.local
+.env.*
+!.env.example
+!.env.*.example
 
 # Editors
 .idea/
@@ -28,6 +32,8 @@ firebase-service-account.json
 # keystore.properties.example IS committed on purpose.
 keystore.properties
 *.keystore.properties
+# EAS local credentials (contains keystore passwords) — never commit.
+credentials.json
 android/local.properties
 
 # Apple / iOS signing
@@ -48,3 +54,4 @@ google-play-service-account.json
 # Expo / EAS
 .expo-shared/
 eas-build.log
+.aider*

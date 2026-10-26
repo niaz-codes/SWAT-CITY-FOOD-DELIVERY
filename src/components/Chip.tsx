@@ -1,11 +1,12 @@
 import React from 'react';
 import { Pressable, StyleSheet } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { AppText } from './AppText';
 import { useThemeColors } from '../theme';
 import { radius, spacing } from '../theme/spacing';
 import { haptics } from '../hooks/useHaptics';
+import { usePressScale } from '../hooks/usePressScale';
 
 type Props = {
   label: string;
@@ -17,9 +18,8 @@ type Props = {
 
 export function Chip({ label, selected, onPress, icon, leadingEmoji }: Props) {
   const { colors } = useThemeColors();
-  const scale = useSharedValue(1);
+  const { animStyle, pressIn, pressOut } = usePressScale(0.94, 16, 300);
 
-  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
   const pop = useAnimatedStyle(() => ({
     transform: [{ scale: selected ? 1.035 : 1 }],
   }));
@@ -31,12 +31,8 @@ export function Chip({ label, selected, onPress, icon, leadingEmoji }: Props) {
   return (
     <Animated.View style={[animStyle, pop]}>
       <Pressable
-        onPressIn={() => {
-          scale.value = withSpring(0.94, { damping: 16, stiffness: 300 });
-        }}
-        onPressOut={() => {
-          scale.value = withSpring(1, { damping: 16, stiffness: 300 });
-        }}
+        onPressIn={pressIn}
+        onPressOut={pressOut}
         onPress={() => {
           haptics.light();
           onPress?.();

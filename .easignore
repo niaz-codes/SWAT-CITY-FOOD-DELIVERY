@@ -38,7 +38,7 @@ ios/.xcode.env.local
 
 # --- Secrets and signing material ---
 .env
-.env.local
+.env.*
 *.keystore
 !android/app/debug.keystore
 *.jks

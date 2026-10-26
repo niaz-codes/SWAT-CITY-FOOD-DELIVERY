@@ -1,6 +1,6 @@
 import React from 'react';
 import { GestureResponderEvent, Pressable, StyleSheet, View } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { AppText } from './AppText';
 import { ArtTile } from './ArtTile';
@@ -10,6 +10,7 @@ import { radius, spacing } from '../theme/spacing';
 import { MenuItem } from '../types/domain';
 import { useCart } from '../state/CartContext';
 import { haptics } from '../hooks/useHaptics';
+import { usePressScale } from '../hooks/usePressScale';
 
 type Variant = 'grid' | 'row';
 
@@ -23,10 +24,9 @@ type Props = {
 
 export function FoodCard({ item, variant = 'grid', onPress, onAdd, quantity = 0 }: Props) {
   const { colors } = useThemeColors();
-  const scale = useSharedValue(1);
+  const grid = usePressScale(0.97, 18, 300);
+  const row = usePressScale(0.98, 18, 300);
   const { add } = useCart();
-
-  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
 
   const handleAdd = (e: GestureResponderEvent) => {
     e.stopPropagation();
@@ -37,16 +37,15 @@ export function FoodCard({ item, variant = 'grid', onPress, onAdd, quantity = 0 
 
   if (variant === 'grid') {
     return (
-      <Animated.View style={[styles.gridWrap, animStyle]}>
+      <Animated.View style={[styles.gridWrap, grid.animStyle]}>
         <Pressable
-          onPressIn={() => {
-            scale.value = withSpring(0.97, { damping: 18, stiffness: 300 });
-          }}
-          onPressOut={() => {
-            scale.value = withSpring(1, { damping: 18, stiffness: 300 });
-          }}
+          onPressIn={grid.pressIn}
+          onPressOut={grid.pressOut}
           onPress={onPress}
-          style={[styles.gridCard, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
+          style={[
+            styles.gridCard,
+            { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+          ]}
         >
           <ArtTile gradient={item.gradient} emoji={item.emoji} size={56} rounded={14} />
           {item.popular && (
@@ -56,7 +55,13 @@ export function FoodCard({ item, variant = 'grid', onPress, onAdd, quantity = 0 
               </AppText>
             </View>
           )}
-          <AppText variant="title" weight="bold" numberOfLines={1} color={colors.textPrimary} style={styles.gridName}>
+          <AppText
+            variant="title"
+            weight="bold"
+            numberOfLines={1}
+            color={colors.textPrimary}
+            style={styles.gridName}
+          >
             {item.name}
           </AppText>
           <AppText variant="small" numberOfLines={1} color={colors.textMuted}>
@@ -78,7 +83,11 @@ export function FoodCard({ item, variant = 'grid', onPress, onAdd, quantity = 0 
                 </AppText>
               </View>
             ) : (
-              <Pressable onPress={handleAdd} hitSlop={8} style={[styles.addBtn, { backgroundColor: colors.primary }]}>
+              <Pressable
+                onPress={handleAdd}
+                hitSlop={8}
+                style={[styles.addBtn, { backgroundColor: colors.primary }]}
+              >
                 <Ionicons name="add" size={20} color={colors.onPrimary} />
               </Pressable>
             )}
@@ -89,16 +98,15 @@ export function FoodCard({ item, variant = 'grid', onPress, onAdd, quantity = 0 
   }
 
   return (
-    <Animated.View style={animStyle}>
+    <Animated.View style={row.animStyle}>
       <Pressable
-        onPressIn={() => {
-          scale.value = withSpring(0.98, { damping: 18, stiffness: 300 });
-        }}
-        onPressOut={() => {
-          scale.value = withSpring(1, { damping: 18, stiffness: 300 });
-        }}
+        onPressIn={row.pressIn}
+        onPressOut={row.pressOut}
         onPress={onPress}
-        style={[styles.rowCard, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
+        style={[
+          styles.rowCard,
+          { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+        ]}
       >
         <ArtTile gradient={item.gradient} emoji={item.emoji} size={72} />
         <View style={styles.rowInfo}>
@@ -133,7 +141,11 @@ export function FoodCard({ item, variant = 'grid', onPress, onAdd, quantity = 0 
               </AppText>
             </View>
           ) : (
-            <Pressable onPress={handleAdd} hitSlop={8} style={[styles.addBtn, { backgroundColor: colors.primary }]}>
+            <Pressable
+              onPress={handleAdd}
+              hitSlop={8}
+              style={[styles.addBtn, { backgroundColor: colors.primary }]}
+            >
               <Ionicons name="add" size={18} color={colors.onPrimary} />
             </Pressable>
           )}

@@ -1,79 +1,168 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
-import Animated, { FadeInDown, FadeInUp, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
+import React, { useEffect, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
+import Animated, {
+  FadeInDown,
+  FadeInUp,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../../navigation/types';
 import { AppText } from '../../components/AppText';
 import { AppHeader } from '../../components/AppHeader';
-import { MapComponent } from '../../components/MapComponent';
+import { AppButton } from '../../components/AppButton';
 import { useThemeColors } from '../../theme';
 import { spacing } from '../../theme/spacing';
 import { useTimer } from '../../hooks/useAsyncData';
 import { haptics } from '../../hooks/useHaptics';
-import { RIDERS } from '../../services/api';
-import { RideFlow, RideType } from '../../types/domain';
+import { rideApi } from '../../services/api';
+import { apiErrorMessage } from '../../services/client';
+import { onSocketEvent } from '../../services/socket';
+import { useToast } from '../../state/ToastProvider';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RideSearching'>;
 
+const POLL_MS = 3_000;
+
+const REFUSAL = 'Could not cancel the search. Try again.';
+
+/**
+ * Waits for a real rider to claim the ride that was just booked. The ride's
+ * status is polled (riders claim via POST /rides/accept) and the
+ * `ride:status` socket event shortcuts the poll as soon as broadcast.
+ */
 export function RideSearchingScreen({ navigation, route }: Props) {
-  const { pickup, dropoff, distanceKm, rideType, fare } = route.params;
+  const { rideId, pickup, dropoff } = route.params;
   const { colors } = useThemeColors();
-  const insets = useSafeAreaInsets();
+  const { error: toastError } = useToast();
+  const seconds = useTimer(1000);
   const [found, setFound] = useState(false);
   const [cancelled, setCancelled] = useState(false);
-  const seconds = useTimer(1000);
+  const [cancelling, setCancelling] = useState(false);
+  const settled = React.useRef(false);
 
   const pulse = useSharedValue(1);
   const ringOpacity = useSharedValue(0.5);
   const sweep = useSharedValue(0);
 
   useEffect(() => {
-    pulse.value = withRepeat(withSequence(withTiming(1.5, { duration: 1600 }), withTiming(1, { duration: 1600 })), -1, false);
-    ringOpacity.value = withRepeat(withSequence(withTiming(0.05, { duration: 1600 }), withTiming(0.5, { duration: 1600 })), -1, false);
+    pulse.value = withRepeat(
+      withSequence(withTiming(1.5, { duration: 1600 }), withTiming(1, { duration: 1600 })),
+      -1,
+      false,
+    );
+    ringOpacity.value = withRepeat(
+      withSequence(withTiming(0.05, { duration: 1600 }), withTiming(0.5, { duration: 1600 })),
+      -1,
+      false,
+    );
     sweep.value = withRepeat(withTiming(1, { duration: 2200 }), -1, false);
   }, [pulse, ringOpacity, sweep]);
 
-  const pulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }], opacity: ringOpacity.value }));
-  const sweepStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${sweep.value * 360}deg` }] }));
+  const pulseStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: pulse.value }],
+    opacity: ringOpacity.value,
+  }));
+  const sweepStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${sweep.value * 360}deg` }],
+  }));
 
-  // Auto-assign after ~4.5s
-  useEffect(() => {
-    const t = setTimeout(() => {
+  const settle = React.useCallback(
+    async (status: string) => {
+      if (settled.current) return;
+      settled.current = true;
       haptics.success();
+      if (status === 'cancelled') {
+        setCancelled(true);
+        return;
+      }
       setFound(true);
-      const flow: RideFlow = {
-        id: `ride_${Date.now()}`,
-        status: 'assigned',
-        rideType,
-        fare,
-        distanceKm,
-        durationMin: Math.round(distanceKm * 4 + 6),
-        pickup,
-        dropoff,
-      };
-      setTimeout(() => navigation.replace('RiderTracking', { ride: flow }), 1600);
-    }, 5000);
-    return () => clearTimeout(t);
+      // A rider claiming the ride lands on tracking; a bailed-out ride goes
+      // home instead.
+      setTimeout(() => navigation.replace('RiderTracking', { rideId }), 1600);
+    },
+    [navigation, rideId],
+  );
+
+  // Status check on mount + every poll; ride:status shortcuts it.
+  const check = React.useCallback(
+    async (silent: boolean) => {
+      if (settled.current) return;
+      try {
+        const detail = await rideApi.detail(rideId);
+        if (detail.status !== 'searching') await settle(detail.status);
+      } catch (err) {
+        if (!silent) {
+          // The ride disappearing (network drop) must stay visible; the poll
+          // keeps trying quietly.
+          toastError(apiErrorMessage(err, 'Lost contact with the search. Check your connection.'));
+        }
+      }
+    },
+    [rideId, settle, toastError],
+  );
+
+  useEffect(() => {
+    void check(false);
+    const id = setInterval(() => void check(true), POLL_MS);
+    let unsubscribe: (() => void) | undefined;
+    let alive = true;
+    onSocketEvent<{ rideId?: string; status?: string }>('ride:status', (payload) => {
+      if (payload?.rideId === rideId && payload.status && payload.status !== 'searching') {
+        void settle(payload.status);
+      }
+    }).then((fn) => {
+      if (alive) unsubscribe = fn;
+    });
+    return () => {
+      alive = false;
+      clearInterval(id);
+      unsubscribe?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [rideId]);
 
-  const searchMs = Math.min(seconds * 1000, 4500);
-
-  const handleCancel = () => {
-    setCancelled(true);
-    navigation.goBack();
+  const cancelSearch = async () => {
+    if (cancelling || settled.current) return;
+    setCancelling(true);
+    try {
+      await rideApi.cancelCustomer(rideId, 'Customer cancelled before a rider was found');
+      settled.current = true;
+      haptics.medium();
+      navigation.popToTop();
+    } catch (err) {
+      toastError(apiErrorMessage(err, REFUSAL));
+    } finally {
+      setCancelling(false);
+    }
   };
 
-  if (cancelled) return null;
+  const searchMs = Math.min(seconds * 1000, POLL_MS * 2);
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
       <AppHeader title="Finding your ride" onBack={() => navigation.goBack()} elevated />
 
       <View style={styles.content}>
-        {!found ? (
+        {cancelled ? (
+          <Animated.View entering={FadeInUp.duration(400)} style={styles.foundWrap}>
+            <View style={[styles.foundBadge, { backgroundColor: colors.surfaceMuted }]}>
+              <Ionicons name="close-circle" size={46} color={colors.textSecondary} />
+            </View>
+            <AppText variant="h3" weight="extraBold" color={colors.textPrimary} center>
+              Ride cancelled
+            </AppText>
+            <AppText variant="body" color={colors.textMuted} center>
+              You will not be charged — the search was called off before a rider arrived.
+            </AppText>
+            <AppButton label="Back home" onPress={() => navigation.popToTop()} style={styles.cancelBtn} />
+          </Animated.View>
+        ) : !found ? (
           <>
             <View style={styles.radarWrap}>
               <Animated.View style={[styles.radarRing, { borderColor: colors.primary }, pulseStyle]} />
@@ -95,7 +184,21 @@ export function RideSearchingScreen({ navigation, route }: Props) {
               </AppText>
             </Animated.View>
 
-            <View style={[styles.searchBar, { width: `${Math.round((searchMs / 4500) * 100)}%` as `${number}%`, backgroundColor: colors.primary }]} />
+            <View
+              style={[
+                styles.searchBar,
+                {
+                  width: `${Math.round((searchMs / (POLL_MS * 2)) * 100)}%` as `${number}%`,
+                  backgroundColor: colors.primary,
+                },
+              ]}
+            />
+            <AppButton
+              label={cancelling ? 'Cancelling…' : 'Cancel search'}
+              variant="ghost"
+              onPress={() => void cancelSearch()}
+              style={styles.cancelBtn}
+            />
           </>
         ) : (
           <Animated.View entering={FadeInUp.duration(500)} style={styles.foundWrap}>
@@ -106,7 +209,7 @@ export function RideSearchingScreen({ navigation, route }: Props) {
               Rider found!
             </AppText>
             <AppText variant="body" color={colors.textMuted} center>
-              {RIDERS[0]!.name} is heading to {pickup}. Vehicle: {RIDERS[0]!.vehicle}.
+              Your rider is heading to {pickup}.
             </AppText>
             <View style={[styles.loadingDots]}>
               {[0, 1, 2].map((i) => (
@@ -120,10 +223,10 @@ export function RideSearchingScreen({ navigation, route }: Props) {
       <View style={styles.summaryCard}>
         <Ionicons name="card-outline" size={20} color={colors.primary} />
         <AppText variant="title" weight="extraBold" color={colors.textPrimary}>
-          Rs {fare}
+          Rs {route.params.fare}
         </AppText>
         <AppText variant="small" color={colors.textMuted}>
-          · {distanceKm.toFixed(1)} km
+          · {route.params.distanceKm.toFixed(1)} km
         </AppText>
       </View>
     </View>
@@ -133,7 +236,10 @@ export function RideSearchingScreen({ navigation, route }: Props) {
 function Dot({ delay, color }: { delay: number; color: string }) {
   const o = useSharedValue(0.35);
   useEffect(() => {
-    o.value = withDelay(delay, withRepeat(withSequence(withTiming(1, { duration: 500 }), withTiming(0.35, { duration: 500 })), 4, false));
+    o.value = withDelay(
+      delay,
+      withRepeat(withSequence(withTiming(1, { duration: 500 }), withTiming(0.35, { duration: 500 })), 4, false),
+    );
   }, [delay, o]);
   const style = useAnimatedStyle(() => ({ opacity: o.value }));
   return <Animated.View style={[styles.dot, { backgroundColor: color }, style]} />;
@@ -141,8 +247,21 @@ function Dot({ delay, color }: { delay: number; color: string }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  content: { alignItems: 'center', justifyContent: 'center', paddingTop: spacing.xxl, paddingHorizontal: spacing.l, position: 'relative' },
-  radarWrap: { width: 200, height: 200, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.xl, position: 'relative' },
+  content: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: spacing.xxl,
+    paddingHorizontal: spacing.l,
+    position: 'relative',
+  },
+  radarWrap: {
+    width: 200,
+    height: 200,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.xl,
+    position: 'relative',
+  },
   radarCore: {
     width: 76,
     height: 76,
@@ -154,13 +273,33 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   radarRing: { position: 'absolute', width: 190, height: 190, borderRadius: 95, borderWidth: 2 },
-  radarRingTwo: { position: 'absolute', width: 120, height: 120, borderRadius: 60, borderWidth: 1.5 },
-  sweep: { position: 'absolute', width: 200, height: 200, alignItems: 'center', justifyContent: 'center' },
+  radarRingTwo: {
+    position: 'absolute',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 1.5,
+  },
+  sweep: {
+    position: 'absolute',
+    width: 200,
+    height: 200,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   sweepHand: { position: 'absolute', top: 24, width: 3, height: 76, borderRadius: 2 },
-  subText: { marginTop: spacing.xs, paddingHorizontal: spacing.l },
+  subText: { marginTop: spacing.xs, paddingHorizontal: spacing.l, textAlign: 'center' },
   searchBar: { height: 6, borderRadius: 3, marginTop: spacing.xl, alignSelf: 'flex-start' },
+  cancelBtn: { marginTop: spacing.l, alignSelf: 'stretch' },
   foundWrap: { alignItems: 'center', gap: spacing.sm, paddingTop: spacing.xl },
-  foundBadge: { width: 88, height: 88, borderRadius: 44, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.sm },
+  foundBadge: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.sm,
+  },
   loadingDots: { flexDirection: 'row', gap: spacing.s, marginTop: spacing.l },
   dot: { width: 10, height: 10, borderRadius: 5 },
   summaryCard: {

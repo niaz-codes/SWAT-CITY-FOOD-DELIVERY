@@ -43,12 +43,28 @@ export function QuantityStepper({ quantity, onChange, size = 'md', min = 0 }: Pr
         hitSlop={6}
         style={[styles.btn, { width: dim, height: dim }, quantity <= min && { opacity: 0.35 }]}
       >
-        <Ionicons name={quantity <= min ? 'trash-outline' : 'remove'} size={size === 'sm' ? 14 : 17} color={colors.textPrimary} />
+        <Ionicons
+          name={quantity <= min ? 'trash-outline' : 'remove'}
+          size={size === 'sm' ? 14 : 17}
+          color={colors.textPrimary}
+        />
       </Pressable>
-      <AppText variant={size === 'sm' ? 'smallMedium' : 'title'} weight="bold" color={colors.textPrimary} style={styles.count}>
+      <AppText
+        variant={size === 'sm' ? 'smallMedium' : 'title'}
+        weight="bold"
+        color={colors.textPrimary}
+        style={styles.count}
+      >
         {quantity}
       </AppText>
-      <Pressable onPress={inc} hitSlop={6} style={[styles.btn, { width: dim, height: dim, backgroundColor: colors.primary, borderRadius: radius.pill }]}>
+      <Pressable
+        onPress={inc}
+        hitSlop={6}
+        style={[
+          styles.btn,
+          { width: dim, height: dim, backgroundColor: colors.primary, borderRadius: radius.pill },
+        ]}
+      >
         <Ionicons name="add" size={size === 'sm' ? 14 : 17} color={colors.onPrimary} />
       </Pressable>
     </View>
@@ -58,5 +74,10 @@ export function QuantityStepper({ quantity, onChange, size = 'md', min = 0 }: Pr
 const styles = StyleSheet.create({
   wrap: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, padding: 3 },
   btn: { alignItems: 'center', justifyContent: 'center' },
-  count: { minWidth: 26, textAlign: 'center', paddingHorizontal: spacing.xs, includeFontPadding: false },
+  count: {
+    minWidth: 26,
+    textAlign: 'center',
+    paddingHorizontal: spacing.xs,
+    includeFontPadding: false,
+  },
 });

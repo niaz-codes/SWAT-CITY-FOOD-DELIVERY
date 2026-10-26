@@ -31,56 +31,42 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       .finally(() => setHydrated(true));
   }, []);
 
-  const persist = useCallback((next: CartItem[]) => {
-    setItems(next);
-    AsyncStorage.setItem(CART_KEY, JSON.stringify(next)).catch(() => {});
+  const add = useCallback((item: MenuItem, quantity = 1) => {
+    setItems((prev) => {
+      const existing = prev.find((i) => i.menuItem.id === item.id);
+      let next: CartItem[];
+      if (existing) {
+        next = prev.map((i) =>
+          i.menuItem.id === item.id ? { ...i, quantity: i.quantity + quantity } : i,
+        );
+      } else {
+        next = [...prev, { menuItem: item, restaurantId: item.restaurantId, quantity }];
+      }
+      AsyncStorage.setItem(CART_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
   }, []);
 
-  const add = useCallback(
-    (item: MenuItem, quantity = 1) => {
-      setItems((prev) => {
-        const existing = prev.find((i) => i.menuItem.id === item.id);
-        let next: CartItem[];
-        if (existing) {
-          next = prev.map((i) =>
-            i.menuItem.id === item.id ? { ...i, quantity: i.quantity + quantity } : i,
-          );
-        } else {
-          next = [...prev, { menuItem: item, restaurantId: item.restaurantId, quantity }];
-        }
-        AsyncStorage.setItem(CART_KEY, JSON.stringify(next)).catch(() => {});
-        return next;
-      });
-    },
-    [],
-  );
+  const remove = useCallback((menuId: string) => {
+    setItems((prev) => {
+      const next = prev.filter((i) => i.menuItem.id !== menuId);
+      AsyncStorage.setItem(CART_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
 
-  const remove = useCallback(
-    (menuId: string) => {
-      setItems((prev) => {
-        const next = prev.filter((i) => i.menuItem.id !== menuId);
-        AsyncStorage.setItem(CART_KEY, JSON.stringify(next)).catch(() => {});
-        return next;
-      });
-    },
-    [],
-  );
-
-  const setQuantity = useCallback(
-    (menuId: string, quantity: number) => {
-      setItems((prev) => {
-        let next: CartItem[];
-        if (quantity <= 0) {
-          next = prev.filter((i) => i.menuItem.id !== menuId);
-        } else {
-          next = prev.map((i) => (i.menuItem.id === menuId ? { ...i, quantity } : i));
-        }
-        AsyncStorage.setItem(CART_KEY, JSON.stringify(next)).catch(() => {});
-        return next;
-      });
-    },
-    [],
-  );
+  const setQuantity = useCallback((menuId: string, quantity: number) => {
+    setItems((prev) => {
+      let next: CartItem[];
+      if (quantity <= 0) {
+        next = prev.filter((i) => i.menuItem.id !== menuId);
+      } else {
+        next = prev.map((i) => (i.menuItem.id === menuId ? { ...i, quantity } : i));
+      }
+      AsyncStorage.setItem(CART_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
 
   const clear = useCallback(() => {
     setItems([]);

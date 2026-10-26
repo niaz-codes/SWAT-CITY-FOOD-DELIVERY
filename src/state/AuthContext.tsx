@@ -1,14 +1,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { User } from '../types/domain';
-import { authApi, RIDER_PROFILE, CURRENT_USER, DEMO_DATA_ENABLED } from '../services/api';
+import { authApi } from '../services/api';
+import { isAccessTokenExpired, onSessionExpired, refreshAccessToken } from '../services/client';
 
 type AuthState = {
   user: User | null;
   hydrated: boolean;
   isRider: boolean;
   setUser: (user: User | null) => Promise<void>;
-  switchToRider: () => Promise<void>;
-  switchToCustomer: () => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -19,12 +18,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    authApi
-      .getSession()
-      .then((session) => setUserState(session))
-      .catch(() => {})
-      .finally(() => setHydrated(true));
+    let cancelled = false;
+    (async () => {
+      try {
+        const session = await authApi.getSession();
+        if (!session) return;
+        // Only restore a session that is actually usable. The backend hands
+        // out short-lived access tokens, so an expired one is first swapped
+        // for a fresh pair via its refresh token; only when that fails too is
+        // the session dropped, exactly as before.
+        if (await isAccessTokenExpired()) {
+          const refreshed = await refreshAccessToken();
+          if (!refreshed) {
+            await authApi.logout();
+            if (!cancelled) setUserState(null);
+            return;
+          }
+        }
+        if (!cancelled) setUserState(session);
+      } catch {
+        // A malformed store should behave like no session at all.
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  // A 401 from any request means the stored token died mid-session. Clearing
+  // the user here routes to Login through the root session guard.
+  useEffect(
+    () =>
+      onSessionExpired(() => {
+        setUserState(null);
+      }),
+    [],
+  );
 
   const setUser = useCallback(async (next: User | null) => {
     setUserState(next);
@@ -35,20 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // The role-switch actions are demo affordances only. In release builds they
-  // must not be able to install a fabricated session that the backend has never
-  // issued a token for.
-  const switchToRider = useCallback(async () => {
-    if (!DEMO_DATA_ENABLED) return;
-    setUserState(RIDER_PROFILE);
-    await authApi.saveUser(RIDER_PROFILE);
-  }, []);
 
-  const switchToCustomer = useCallback(async () => {
-    if (!DEMO_DATA_ENABLED) return;
-    setUserState(CURRENT_USER);
-    await authApi.saveUser(CURRENT_USER);
-  }, []);
 
   const logout = useCallback(async () => {
     setUserState(null);
@@ -56,8 +74,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo<AuthState>(
-    () => ({ user, hydrated, isRider: user?.role === 'rider', setUser, switchToRider, switchToCustomer, logout }),
-    [user, hydrated, setUser, switchToRider, switchToCustomer, logout],
+    () => ({
+      user,
+      hydrated,
+      isRider: user?.role === 'rider',
+      setUser,
+      logout,
+    }),
+    [user, hydrated, setUser, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

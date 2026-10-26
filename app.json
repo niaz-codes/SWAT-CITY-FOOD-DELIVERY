@@ -44,8 +44,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Swat City to read a photo so admin can verify a rider's documents.",
-          "cameraPermission": "Allow Swat City to use the camera to take your partner photo."
+          "photosPermission": "Allow Swat City Food Delivery to read a photo so admin can verify a rider's documents.",
+          "cameraPermission": "Allow Swat City Food Delivery to use the camera to take your partner photo."
         }
       ],
       "./plugins/withGoogleServices"
@@ -72,8 +72,7 @@
       "bundleIdentifier": "com.swatcity.delivery",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Your location is shared with the customer while you are delivering, and with admin support, so they can find you.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Your location is shared with the customer while you are delivering, and with admin support, so they can find you.",
-        "NSCameraUsageDescription": "Swat City uses the camera to take your partner photo when you register as a rider."
+        "NSCameraUsageDescription": "Swat City Food Delivery uses the camera to take your partner photo when you register as a rider."
       }
     },
     "extra": {

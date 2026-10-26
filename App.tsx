@@ -14,6 +14,8 @@ import {
 } from '@expo-google-fonts/plus-jakarta-sans';
 import { ThemeProvider, useAppTheme, ColorScheme } from './src/theme';
 import { AuthProvider } from './src/state/AuthContext';
+import { RiderLocationProvider } from './src/state/RiderLocationProvider';
+import { PresenceProvider } from './src/state/PresenceProvider';
 import { CartProvider } from './src/state/CartContext';
 import { ToastProvider } from './src/state/ToastProvider';
 import { RootNavigator, navigationRef } from './src/navigation/RootNavigator';
@@ -64,11 +66,15 @@ export default function App() {
       <SafeAreaProvider>
         <ThemeProvider>
           <AuthProvider>
-            <CartProvider>
-              <ToastProvider>
-                <AppNavigator />
-              </ToastProvider>
-            </CartProvider>
+            <RiderLocationProvider>
+              <PresenceProvider>
+                <CartProvider>
+                  <ToastProvider>
+                    <AppNavigator />
+                  </ToastProvider>
+                </CartProvider>
+              </PresenceProvider>
+            </RiderLocationProvider>
           </AuthProvider>
         </ThemeProvider>
       </SafeAreaProvider>

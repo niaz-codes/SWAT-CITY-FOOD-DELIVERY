@@ -10,11 +10,15 @@ import { AppText } from '../../components/AppText';
 import { MapComponent } from '../../components/MapComponent';
 import { RideCard } from '../../components/RideCard';
 import { AppButton } from '../../components/AppButton';
+import { rideApi } from '../../services/api';
+import { apiErrorMessage } from '../../services/client';
 import { useThemeColors } from '../../theme';
 import { spacing } from '../../theme/spacing';
-import { RIDE_FARES, estimateFare } from '../../services/api';
+import { estimateFare } from '../../services/api';
 import { rideLocationStore } from '../../state/rideLocationStore';
 import { Address, RideType } from '../../types/domain';
+import { haptics } from '../../hooks/useHaptics';
+import { useToast } from '../../state/ToastProvider';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -28,14 +32,49 @@ function haversineKm(a: Address, b: Address): number {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+const FARES = [
+  {
+    rideType: 'swat_moto' as RideType,
+    vehicle: 'bike' as const,
+    label: 'Swat Moto',
+    capacity: '1 rider',
+    etaMin: 3,
+    base: 60,
+    perKm: 22,
+    icon: 'bicycle' as const,
+  },
+  {
+    rideType: 'swat_city' as RideType,
+    vehicle: 'rickshaw' as const,
+    label: 'Swat City Ride',
+    capacity: 'Up to 4',
+    etaMin: 6,
+    base: 90,
+    perKm: 28,
+    icon: 'car-sport' as const,
+  },
+  {
+    rideType: 'swat_van' as RideType,
+    vehicle: 'van' as const,
+    label: 'Swat Van',
+    capacity: 'Up to 7',
+    etaMin: 12,
+    base: 140,
+    perKm: 36,
+    icon: 'bus' as const,
+  },
+];
+
 export function RideBookingScreen() {
   const { colors } = useThemeColors();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
+  const { error: toastError } = useToast();
 
   const [pickup, setPickup] = useState<Address | null>(rideLocationStore.pickup);
   const [dropoff, setDropoff] = useState<Address | null>(rideLocationStore.dropoff);
   const [rideType, setRideType] = useState<RideType>('swat_city');
+  const [booking, setBooking] = useState(false);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -45,9 +84,15 @@ export function RideBookingScreen() {
   );
 
   const routeReady = pickup != null && dropoff != null;
-  const distanceKm = useMemo(() => (routeReady ? haversineKm(pickup!, dropoff!) : 0), [routeReady, pickup, dropoff]);
+  const distanceKm = useMemo(
+    () => (routeReady ? haversineKm(pickup!, dropoff!) : 0),
+    [routeReady, pickup, dropoff],
+  );
 
-  const fares = useMemo(() => RIDE_FARES.map((f) => ({ ...f, fare: estimateFare(distanceKm, f.rideType) })), [distanceKm]);
+  const fares = useMemo(
+    () => FARES.map((f) => ({ ...f, fare: estimateFare(distanceKm, f.rideType) })),
+    [distanceKm],
+  );
 
   const selected = fares.find((f) => f.rideType === rideType) ?? fares[1]!;
 
@@ -60,7 +105,9 @@ export function RideBookingScreen() {
       >
         <View style={[styles.header, { paddingTop: insets.top + spacing.s }]}>
           <View>
-            <AppText variant="caption" color={colors.textMuted}>SWAT CITY</AppText>
+            <AppText variant="caption" color={colors.textMuted}>
+              SWAT CITY FOOD DELIVERY
+            </AppText>
             <AppText variant="h3" weight="extraBold" color={colors.textPrimary}>
               Where to, {pickup?.label.split(' ')[0] ?? 'Ahmad'}?
             </AppText>
@@ -84,7 +131,12 @@ export function RideBookingScreen() {
           )}
         </View>
 
-        <View style={[styles.locations, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+        <View
+          style={[
+            styles.locations,
+            { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+          ]}
+        >
           <PlaceRow
             icon="ellipse"
             iconColor={colors.primary}
@@ -119,7 +171,13 @@ export function RideBookingScreen() {
                 </AppText>
               </View>
               {fares.map((f) => (
-                <RideCard key={f.rideType} ride={f} fare={f.fare} selected={rideType === f.rideType} onSelect={() => setRideType(f.rideType)} />
+                <RideCard
+                  key={f.rideType}
+                  ride={f}
+                  fare={f.fare}
+                  selected={rideType === f.rideType}
+                  onSelect={() => setRideType(f.rideType)}
+                />
               ))}
             </View>
 
@@ -138,17 +196,40 @@ export function RideBookingScreen() {
         pointerEvents="box-none"
       >
         <AppButton
-          disabled={!routeReady}
-          label={routeReady ? `Book ${selected.label} · Rs ${fares.find((f) => f.rideType === rideType)?.fare ?? 0}` : 'Set your trip first'}
-          onPress={() =>
-            navigation.navigate('RideSearching', {
-              pickup: pickup!.label,
-              dropoff: dropoff!.label,
-              distanceKm,
-              rideType,
-              fare: fares.find((f) => f.rideType === rideType)?.fare ?? 0,
-            })
+          disabled={!routeReady || booking}
+          label={
+            !routeReady
+              ? 'Set your trip first'
+              : `Book ${selected.label} · Rs ${fares.find((f) => f.rideType === rideType)?.fare ?? 0}`
           }
+          onPress={async () => {
+            if (!pickup || !dropoff || booking) return;
+            setBooking(true);
+            try {
+              haptics.medium();
+              // The server recomputes the distance and the fare; whatever comes
+              // back is the price of record for the trip.
+              const ride = await rideApi.book({
+                type: rideType,
+                pickup: { address: pickup.full || pickup.label, lat: pickup.lat, lng: pickup.lng },
+                dropoff: { address: dropoff.full || dropoff.label, lat: dropoff.lat, lng: dropoff.lng },
+                paymentMethod: 'cash',
+              });
+              rideLocationStore.clear();
+              navigation.navigate('RideSearching', {
+                rideId: ride.id,
+                pickup: pickup.label,
+                dropoff: dropoff.label,
+                distanceKm: ride.distanceKm,
+                rideType,
+                fare: ride.fare,
+              });
+            } catch (err) {
+              toastError(apiErrorMessage(err, 'Could not book the ride. Try again.'));
+            } finally {
+              setBooking(false);
+            }
+          }}
           size="lg"
         />
       </LinearGradient>
@@ -195,7 +276,12 @@ function PlaceRow({
 function TripMeta({ icon, label }: { icon: keyof typeof Ionicons.glyphMap; label: string }) {
   const { colors } = useThemeColors();
   return (
-    <View style={[styles.tripMeta, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+    <View
+      style={[
+        styles.tripMeta,
+        { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+      ]}
+    >
       <Ionicons name={icon} size={16} color={colors.primary} />
       <AppText variant="smallMedium" weight="bold" color={colors.textPrimary}>
         {label}
@@ -221,16 +307,47 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingHorizontal: spacing.m,
   },
-  locations: { marginHorizontal: spacing.m, borderRadius: 20, borderWidth: 1, marginBottom: spacing.m },
-  placeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.m, paddingHorizontal: spacing.m, paddingVertical: spacing.sm },
+  locations: {
+    marginHorizontal: spacing.m,
+    borderRadius: 20,
+    borderWidth: 1,
+    marginBottom: spacing.m,
+  },
+  placeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.m,
+    paddingHorizontal: spacing.m,
+    paddingVertical: spacing.sm,
+  },
   placeRowTop: {},
   placeIcon: { width: 24, alignItems: 'center' },
   placeText: { flex: 1, gap: 1 },
-  tripMetaRow: { flexDirection: 'row', gap: spacing.s, paddingHorizontal: spacing.m, marginBottom: spacing.m },
-  tripMeta: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, height: 42, borderRadius: 16, borderWidth: 1 },
+  tripMetaRow: {
+    flexDirection: 'row',
+    gap: spacing.s,
+    paddingHorizontal: spacing.m,
+    marginBottom: spacing.m,
+  },
+  tripMeta: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    height: 42,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
   ridesSection: { paddingHorizontal: spacing.m },
   sectionTitleRow: { marginBottom: spacing.sm },
-  estimate: { marginHorizontal: spacing.m, marginTop: spacing.m, borderRadius: 14, paddingVertical: spacing.sm, alignItems: 'center' },
+  estimate: {
+    marginHorizontal: spacing.m,
+    marginTop: spacing.m,
+    borderRadius: 14,
+    paddingVertical: spacing.sm,
+    alignItems: 'center',
+  },
   footerGradient: {
     position: 'absolute',
     left: 0,

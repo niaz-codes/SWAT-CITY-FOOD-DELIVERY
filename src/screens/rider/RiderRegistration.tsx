@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Alert,
   Image,
@@ -19,11 +19,12 @@ import { AppHeader } from '../../components/AppHeader';
 import { AppInput } from '../../components/AppInput';
 import { AppButton } from '../../components/AppButton';
 import { Chip } from '../../components/Chip';
-import { LeafletMap, type MapMarker } from '../../components/map/LeafletMap';
+import { InlineBanner } from '../../components/InlineBanner';
+import { LocationPickerMap, type PickedLocation } from '../../components/map/LocationPickerMap';
 import { authApi } from '../../services/api';
 import { apiErrorMessage } from '../../services/client';
 import { useThemeColors } from '../../theme';
-import { spacing } from '../../theme/spacing';
+import { radius, spacing } from '../../theme/spacing';
 import { haptics } from '../../hooks/useHaptics';
 import { useToast } from '../../state/ToastProvider';
 import { VEHICLES, type VehicleKey } from '../../constants/vehicles';
@@ -31,6 +32,9 @@ import { VEHICLES, type VehicleKey } from '../../constants/vehicles';
 type Props = NativeStackScreenProps<RootStackParamList, 'RiderRegistration'>;
 
 const SWAT_CENTER = { lat: 34.9118, lng: 72.3211 };
+
+/** The upload endpoint stops at 5 MB; the check happens a little earlier. */
+const MAX_PHOTO_BYTES = 4.5 * 1024 * 1024;
 
 const digitsOnly = (v: string) => v.replace(/[^0-9]/g, '');
 
@@ -50,8 +54,15 @@ export function RiderRegistrationScreen({ navigation }: Props) {
   const [experience, setExperience] = useState('');
 
   const [photoUri, setPhotoUri] = useState<string | null>(null);
-  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
+  // The type the picker reported for the photo. Android's editor can hand back
+  // a PNG even though the camera produced a JPEG, and the server stores the
+  // file under the name the declared type implies.
+  const [photoMime, setPhotoMime] = useState<string | undefined>(undefined);
+  const [location, setLocation] = useState<PickedLocation | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // null = not uploading yet; 0-100 while the multipart body is in flight.
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
 
   const phoneDigits = digitsOnly(phone);
   const cnicDigits = digitsOnly(cnic);
@@ -61,6 +72,16 @@ export function RiderRegistrationScreen({ navigation }: Props) {
   const yearsValid = Number.isFinite(years) && years >= 0 && years <= 60;
   const passwordValid = password.length >= 8 && /[A-Za-z]/.test(password) && /[0-9]/.test(password);
   const emailValid = email.trim().includes('@');
+
+  const uploading = submitting && uploadPercent !== null && uploadPercent < 100;
+  const creatingAccount = submitting && uploadPercent !== null && uploadPercent >= 100;
+  const submitLabel = !submitting
+    ? 'Submit registration'
+    : uploading
+      ? `Uploading photo… ${uploadPercent}%`
+      : creatingAccount
+        ? 'Creating your account…'
+        : 'Sending your photo…';
 
   /**
    * Photo capture. Only the camera is offered - there is deliberately no
@@ -86,21 +107,27 @@ export function RiderRegistrationScreen({ navigation }: Props) {
       });
       if (result.canceled || !result.assets?.[0]?.uri) return;
 
+      // The upload endpoint stops at 5 MB. A photo above that limit would only
+      // fail after the whole file was pushed over the mobile network, so it is
+      // caught here instead.
+      const fileSize = result.assets[0].fileSize;
+      if (fileSize && fileSize > MAX_PHOTO_BYTES) {
+        Alert.alert(
+          'Photo is too large',
+          'That photo is bigger than 5 MB and cannot be uploaded. Please retake it in a lower resolution.',
+        );
+        return;
+      }
+
       haptics.medium();
       setPhotoUri(result.assets[0].uri);
+      setPhotoMime(result.assets[0].mimeType ?? undefined);
+      setUploadPercent(null);
     } catch {
       // A missing camera (simulator) or a denied permission both land here.
       error('Could not open the camera. Please check camera permission in Settings.');
     }
   };
-
-  const markers = useMemo<MapMarker[]>(
-    () =>
-      location
-        ? [{ id: 'base', lat: location.lat, lng: location.lng, kind: 'rider', label: 'Your base' }]
-        : [],
-    [location],
-  );
 
   const valid =
     name.trim().length >= 3 &&
@@ -122,19 +149,38 @@ export function RiderRegistrationScreen({ navigation }: Props) {
     if (!plateValid) return 'Enter your bike registration number';
     if (!yearsValid) return 'Enter your years of riding experience';
     if (!photoUri) return 'Take your photo with the camera';
-    if (!location) return 'Tap the map to set your base location';
+    if (!location) return 'Search or tap the map to set your base location';
     return null;
   };
 
+  /** Live checklist so the form always says what is still missing. */
+  const CHECKLIST = [
+    { label: 'Photo taken', done: () => Boolean(photoUri) },
+    { label: 'Full name', done: () => name.trim().length >= 3 },
+    { label: 'Mobile number', done: () => phoneDigits.length >= 10 },
+    { label: 'Email address', done: () => emailValid },
+    { label: 'Secure password', done: () => passwordValid },
+    { label: 'CNIC number', done: () => cnicValid },
+    { label: 'Vehicle number', done: () => plateValid },
+    { label: 'Experience', done: () => yearsValid },
+    { label: 'Base location', done: () => Boolean(location) },
+  ];
+
   const submit = async () => {
+    // A second tap must never start a second registration: the first one may
+    // already be creating the account on the server.
+    if (submitting) return;
     const missing = firstMissing();
     if (missing || !photoUri || !location) {
       haptics.warning();
+      setBanner(missing ?? 'Please complete all required fields');
       error(missing ?? 'Please complete all required fields');
       return;
     }
 
     setSubmitting(true);
+    setUploadPercent(0);
+    setBanner(null);
     try {
       const challenge = await authApi.registerRider({
         name: name.trim(),
@@ -148,6 +194,8 @@ export function RiderRegistrationScreen({ navigation }: Props) {
         experienceYears: years,
         location,
         photoUri,
+        photoMimeType: photoMime,
+        onProgress: (percent) => setUploadPercent(percent),
       });
       haptics.success();
       success('Almost done — confirm the code we emailed you');
@@ -159,9 +207,17 @@ export function RiderRegistrationScreen({ navigation }: Props) {
       });
     } catch (err) {
       haptics.warning();
-      error(apiErrorMessage(err, 'Registration failed. Please try again.'));
+      // The server's own wording is kept: it knows whether the clash was the
+      // phone number or the email, and it explains a photo that was too large.
+      const raw = apiErrorMessage(err, 'Registration failed. Please try again.');
+      const message = /too large/i.test(raw)
+        ? 'Your photo is larger than 5 MB. Please retake it in a lower resolution.'
+        : raw;
+      setBanner(message);
+      error(message);
     } finally {
       setSubmitting(false);
+      setUploadPercent(null);
     }
   };
 
@@ -215,7 +271,7 @@ export function RiderRegistrationScreen({ navigation }: Props) {
                 <View style={styles.photoOverlay}>
                   <Ionicons name="camera" size={18} color="#FFFFFF" />
                   <AppText variant="smallMedium" color="#FFFFFF">
-                    Retake photo
+                    Retake / crop
                   </AppText>
                 </View>
               </>
@@ -233,6 +289,47 @@ export function RiderRegistrationScreen({ navigation }: Props) {
               </View>
             )}
           </Pressable>
+
+          {/* Upload state: the camera editor already crops to a square preview,
+              so "retake / crop" re-enters that editor. Progress is shown here
+              because the photo is the largest part of the request and the
+              account is only created after it has fully arrived. */}
+          {photoUri ? (
+            <View style={styles.uploadStatus}>
+              {uploading ? (
+                <>
+                  <View style={[styles.progressTrack, { backgroundColor: colors.border }]}>
+                    <View
+                      style={[
+                        styles.progressFill,
+                        {
+                          backgroundColor: colors.primary,
+                          width: `${Math.max(4, uploadPercent ?? 0)}%` as `${number}%`,
+                        },
+                      ]}
+                    />
+                  </View>
+                  <AppText variant="caption" color={colors.textSecondary}>
+                    Uploading your photo… {uploadPercent ?? 0}%
+                  </AppText>
+                </>
+              ) : creatingAccount ? (
+                <View style={styles.uploadRow}>
+                  <Ionicons name="cloud-done-outline" size={16} color={colors.success} />
+                  <AppText variant="caption" color={colors.textSecondary}>
+                    Photo uploaded — creating your account…
+                  </AppText>
+                </View>
+              ) : (
+                <View style={styles.uploadRow}>
+                  <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                  <AppText variant="caption" color={colors.textSecondary}>
+                    Photo ready. Retake or crop it if needed before submitting.
+                  </AppText>
+                </View>
+              )}
+            </View>
+          ) : null}
 
           {/* --- Details ---------------------------------------------------- */}
           <AppText
@@ -345,7 +442,7 @@ export function RiderRegistrationScreen({ navigation }: Props) {
             hint="Enter the number of years you have been riding"
           />
 
-          {/* --- Base location on the live map ------------------------------ */}
+          {/* --- Base location: search, tap or GPS -------------------------- */}
           <AppText
             variant="captionBold"
             color={colors.textMuted}
@@ -355,66 +452,77 @@ export function RiderRegistrationScreen({ navigation }: Props) {
             Base location
           </AppText>
           <AppText variant="small" color={colors.textMuted}>
-            Tap the map to drop a pin where you usually start your shift.
+            Search your area, tap the map, or use your current location to mark where you usually
+            start your shift.
           </AppText>
-          <LeafletMap
-            markers={markers}
-            initialCenter={location ?? SWAT_CENTER}
-            initialZoom={14}
+          <LocationPickerMap
+            value={location}
+            initialCenter={SWAT_CENTER}
             height={230}
-            onPick={(lat, lng) => {
-              haptics.light();
-              setLocation({ lat, lng });
+            confirmLabel="Set base location"
+            hint="Tip: search “Saidu Sharif”, “Kabal” or tap the exact spot."
+            onConfirm={(picked) => {
+              haptics.success();
+              setLocation(picked);
             }}
-            onMapError={(message) => error(message)}
           />
-          <View
-            style={[
-              styles.pickedRow,
-              { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
-            ]}
-          >
-            <Ionicons
-              name={location ? 'location' : 'location-outline'}
-              size={17}
-              color={location ? colors.primary : colors.textMuted}
-            />
-            <AppText
-              variant="small"
-              color={location ? colors.textSecondary : colors.textMuted}
-              style={styles.pickedText}
-            >
-              {location
-                ? `Pinned at ${location.lat.toFixed(4)}, ${location.lng.toFixed(4)}`
-                : 'No location picked yet'}
-            </AppText>
-            {location ? (
-              <Pressable hitSlop={8} onPress={() => setLocation(null)}>
-                <AppText variant="smallMedium" color={colors.primary}>
-                  Change
-                </AppText>
-              </Pressable>
-            ) : null}
-          </View>
+
+          {banner ? <InlineBanner kind="error" message={banner} style={styles.banner} /> : null}
 
           <AppButton
-            label="Submit registration"
+            label={submitLabel}
             icon="checkmark"
             size="lg"
             onPress={submit}
             loading={submitting}
-            disabled={!valid}
+            disabled={!valid || submitting}
             style={styles.submit}
           />
           {!valid ? (
-            <Pressable onPress={() => error(firstMissing() ?? '')} hitSlop={6}>
-              <AppText variant="small" color={colors.primary} center>
-                See what is still missing
-              </AppText>
-            </Pressable>
+            <>
+              <Pressable
+                onPress={() => {
+                  const message = firstMissing() ?? '';
+                  setBanner(message);
+                  error(message);
+                }}
+                hitSlop={6}
+              >
+                <AppText variant="small" color={colors.primary} center>
+                  See what is still missing
+                </AppText>
+              </Pressable>
+
+              <View
+                style={[
+                  styles.checklist,
+                  { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+                ]}
+              >
+                {CHECKLIST.map((item) => {
+                  const done = item.done();
+                  return (
+                    <View key={item.label} style={styles.checkItem}>
+                      <Ionicons
+                        name={done ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={16}
+                        color={done ? colors.success : colors.textMuted}
+                      />
+                      <AppText
+                        variant="caption"
+                        color={done ? colors.textSecondary : colors.textMuted}
+                        style={styles.checkLabel}
+                      >
+                        {item.label}
+                      </AppText>
+                    </View>
+                  );
+                })}
+              </View>
+            </>
           ) : null}
           <AppText variant="micro" color={colors.textMuted} style={styles.legal}>
-            By continuing you agree to the Swat City partner terms. Your documents will be verified
+            By continuing you agree to the Swat City Food Delivery partner terms. Your documents will be verified
             in 24-48 hours.
           </AppText>
 
@@ -484,20 +592,24 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
 
+  uploadStatus: { gap: 6, marginTop: spacing.xs },
+  uploadRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  progressTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
+  progressFill: { height: '100%', borderRadius: 3 },
+
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s },
 
-  pickedRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingHorizontal: spacing.m,
-    paddingVertical: spacing.s,
-  },
-  pickedText: { flex: 1 },
-
   submit: { marginTop: spacing.sm },
+  banner: { marginTop: spacing.sm },
+  checklist: {
+    marginTop: spacing.sm,
+    padding: spacing.m,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    gap: spacing.xs,
+  },
+  checkItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.s },
+  checkLabel: { flex: 1 },
   legal: { textAlign: 'center' },
   haveAccount: { alignItems: 'center', paddingVertical: spacing.sm },
 });

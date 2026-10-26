@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { TabBar, TabItem } from '../../components/TabBar';
-import { riderApi } from '../../services/api';
+import { riderFeedApi } from '../../services/api';
 import { RiderHomeScreen } from './RiderHome';
 import { RiderRequestsScreen } from './RiderRequests';
 import { RiderEarningsScreen } from './RiderEarnings';
@@ -21,7 +21,10 @@ export function RiderMainShellScreen() {
   const [badges, setBadges] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    riderApi.getRequests().then((requests) => setBadges({ requests: requests.length })).catch(() => {});
+    riderFeedApi
+      .getRequests()
+      .then((requests) => setBadges({ requests: requests.length }))
+      .catch(() => {});
   }, []);
 
   const items: TabItem[] = TABS.map((t) => (badges[t.key] ? { ...t, badge: badges[t.key] } : t));
@@ -30,7 +33,10 @@ export function RiderMainShellScreen() {
     <View style={styles.root}>
       <View style={styles.content}>
         <View style={[styles.pane, active === 'home' && styles.active]}>
-          <RiderHomeScreen onGoToRequests={() => setActive('requests')} onGoToProfile={() => setActive('profile')} />
+          <RiderHomeScreen
+            onGoToRequests={() => setActive('requests')}
+            onGoToProfile={() => setActive('profile')}
+          />
         </View>
         <View style={[styles.pane, active === 'requests' && styles.active]}>
           <RiderRequestsScreen embedded />
