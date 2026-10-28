@@ -1,5 +1,19 @@
 # Security Rules (Mandatory)
 
+## Demo payments (TESTING ONLY)
+
+- The simulated payment mode exists **only** when the server env sets
+  `DEMO_PAYMENTS_ENABLED="true"`; the flag is validated server-side and can
+  never be switched on by a client. Default is off.
+- Every demo record (payment row, wallet ledger row, app UI, admin panel
+  badge) says **`DEMO — NOT REAL MONEY`**. Demo money is accounted against
+  the ADMIN wallet as a `commission` ledger row named
+  `demo_<transactionRef>`, guarded by a unique partial index so a replay can
+  never credit twice.
+- No fake payment success exists in production: a real order is only marked
+  paid by a server-verified gateway response. Real gateway code paths are
+  unchanged by the demo provider. See `PAYMENTS.md` for the full contract.
+
 ## Secrets
 
 - No keys/passwords/tokens in code or git history. Use `.env` + `.env.example`.
