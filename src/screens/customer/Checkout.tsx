@@ -20,6 +20,7 @@ import { formatCurrency } from '../../utils/format';
 import { haptics } from '../../hooks/useHaptics';
 import {
   addressApi,
+  cartApi,
   orderApi,
   paymentApi,
   type CheckoutPaymentMethod,
@@ -42,7 +43,7 @@ type MethodKey = CheckoutPaymentMethod;
 const BRAND: Record<string, { bg: string; fg: string; short: string }> = {
   easypaisa: { bg: '#3BAE49', fg: '#FFFFFF', short: 'EP' },
   jazzcash: { bg: '#EE1C25', fg: '#FFFFFF', short: 'JC' },
-  demo: { bg: '#B45309', fg: '#FFFFFF', short: 'DEMO' },
+  demo: { bg: '#B45309', fg: '#FFFFFF', short: 'Q' },
 };
 
 const METHODS: {
@@ -68,14 +69,15 @@ const METHODS: {
     brand: BRAND.jazzcash,
   },
   /**
-   * Only rendered when the backend reports demo payments as enabled. Every
-   * string screams that no money moves, and the tap still asks for
-   * confirmation before the order is placed.
+   * Offered as the wallet-free option. The customer-facing copy stays neutral —
+   * the "DEMO — NOT REAL MONEY" marking is kept on the server side: every demo
+   * payment row, the admin Payments panel and the wallet ledger are labelled,
+   * so internal records can never be mistaken for real money.
    */
   {
     key: 'demo',
-    label: 'Demo Pay',
-    note: 'Simulated payment — DEMO — NOT REAL MONEY',
+    label: 'Quick Pay',
+    note: 'Pay in one tap — no wallet app needed',
     gateway: 'demo',
     brand: BRAND.demo,
   },
@@ -127,21 +129,28 @@ export function CheckoutScreen({ navigation }: Props) {
   useEffect(() => {
     let cancelled = false;
     if (items.length === 0) return;
-    paymentApi
-      .quote()
-      .then((q) => {
+    (async () => {
+      try {
+        // The quote is priced from the SERVER cart, so mirror the device cart
+        // first — quoting with an unsynced cart fails with "Your cart is
+        // empty" and the checkout would sit loading forever.
+        await cartApi.sync(restaurantId, items);
+        const q = await paymentApi.quote();
         if (!cancelled) {
           setQuote(q);
           setQuoteError(null);
+          // Availability rides along with the quote; only use it when the
+          // dedicated /payments/methods call has answered nothing.
+          setGateways((prev) => (prev.length > 0 ? prev : (q.methods ?? [])));
         }
-      })
-      .catch((e: unknown) => {
+      } catch (e: unknown) {
         if (!cancelled) setQuoteError(apiErrorMessage(e, 'Could not load your bill'));
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [items]);
+  }, [items, restaurantId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -275,12 +284,7 @@ export function CheckoutScreen({ navigation }: Props) {
 
       if (verification.status === 'paid') {
         clear();
-        if (method === 'demo') {
-          // Never word a demo success like a real charge.
-          success('Demo payment recorded — NOT REAL MONEY');
-        } else {
-          success('Payment successful');
-        }
+        success('Order placed — payment confirmed');
       } else if (verification.status === 'failed') {
         error(verification.reason ?? 'Payment failed. Your order was not charged.');
       } else {
@@ -295,9 +299,9 @@ export function CheckoutScreen({ navigation }: Props) {
   };
 
   /**
-   * Demo checkout always restates the contract before anything is simulated: no
-   * real money moves, the order is created for testing, and it shows up in the
-   * admin panel labelled DEMO.
+   * The wallet-free method settles instantly, so it still confirms with the
+   * customer before the order is placed. No "demo" wording — the server records
+   * carry the marking; the customer just sees a normal checkout.
    */
   const placeOrder = () => {
     if (method !== 'demo') {
@@ -305,11 +309,11 @@ export function CheckoutScreen({ navigation }: Props) {
       return;
     }
     Alert.alert(
-      'Demo checkout — NOT REAL MONEY',
-      'This places a TEST order and a SIMULATED payment. No real money will be transferred, and no wallet account is involved. Continue?',
+      'Confirm your order',
+      `Place your order and confirm payment of ${formatCurrency(total)} now?`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Place demo order', onPress: () => void submitOrder() },
+        { text: 'Place order', onPress: () => void submitOrder() },
       ],
     );
   };
@@ -503,7 +507,7 @@ export function CheckoutScreen({ navigation }: Props) {
           label={
             quote
               ? method === 'demo'
-                ? `Place demo order · ${formatCurrency(total)}`
+                ? `Place order · ${formatCurrency(total)}`
                 : `Pay · ${formatCurrency(total)}`
               : 'Preparing your bill…'
           }
@@ -512,17 +516,11 @@ export function CheckoutScreen({ navigation }: Props) {
           loading={placing}
           disabled={!canSubmit}
         />
-        {method === 'demo' && (
-          <AppText variant="microBold" color={colors.warning} center style={styles.footerNote}>
-            DEMO MODE — NOT REAL MONEY. A test order is created and a simulated payment
-            is recorded against the admin account.
-          </AppText>
-        )}
         <AppText variant="micro" color={colors.textMuted} center style={styles.footerNote}>
           {noGatewayAvailable
             ? 'No payment method is available right now. Please try again later.'
             : method === 'demo'
-              ? 'The order goes through the real pipeline; only the payment is simulated.'
+              ? 'Your order is confirmed right away — no payment page is opened.'
               : 'You will be taken to the payment page. Your order is confirmed once payment succeeds.'}
         </AppText>
       </Animated.View>

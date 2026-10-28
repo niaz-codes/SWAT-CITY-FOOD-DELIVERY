@@ -39,10 +39,13 @@ gateway. **No money of any kind moves.**
   The demo flows through the same `initiateOnlinePayment` →
   `verifyOnlinePayment` machinery as Easypaisa/JazzCash — there is no
   separate settle path, no fake client-side success.
-- **Label:** every record and UI surface says **DEMO — NOT REAL MONEY**:
-  the app's checkout confirmation + success toast, the admin panel's amber
-  badge on the Payments page, the payment `raw` metadata (`demo: true`,
-  `simulated: true`), and the ledger description.
+- **Label:** every server-side record and admin surface says
+  **DEMO — NOT REAL MONEY**: the create-order response's `demoMode.label`,
+  the admin panel's amber badge on the Payments page, the payment `raw`
+  metadata (`demo: true`, `simulated: true`), and the ledger description.
+  The customer-facing mobile checkout presents the method neutrally as
+  "Quick Pay" with no demo wording on purpose (per the owner's decision) —
+  the DEMO marking lives on the server side where records are kept.
 - **Admin ledger:** when a demo payment settles, the amount is credited as a
   `commission` WalletTransaction against the ADMIN's wallet with reference
   `demo_<transactionRef>`. Idempotency is manual check + the unique partial

@@ -840,6 +840,29 @@ export type PaymentState = {
   } | null;
 };
 
+/**
+ * Pushes the on-device cart to the server. The server cart is the pricing
+ * authority — both `/orders/quote` and `placeOrder` rebuild every total from
+ * it — so it MUST be synced before the checkout screen loads its bill. A
+ * server cart that still looks empty makes the quote fail ("Your cart is
+ * empty") and the checkout, which waits for the quote before enabling the
+ * order button, would sit loading forever.
+ */
+export const cartApi = {
+  async sync(restaurantId: string | null | undefined, items: CartItem[]): Promise<void> {
+    const rid = restaurantId ?? items[0]?.restaurantId ?? null;
+    if (!rid || items.length === 0) throw new Error('Cart is empty');
+    await httpPost('/cart', {
+      restaurantId: rid,
+      items: items.map((i) => ({
+        foodItem: i.menuItem.id,
+        quantity: i.quantity,
+        note: i.specialInstructions,
+      })),
+    });
+  },
+};
+
 export const paymentApi = {
   /** Which gateways are usable right now, so the UI can disable unavailable ones. */
   async methods(): Promise<GatewayMethodInfo[]> {
@@ -922,14 +945,9 @@ export const orderApi = {
     const restaurantId = items[0]?.restaurantId;
     if (!restaurantId) throw new Error('Unknown restaurant');
 
-    await httpPost('/cart', {
-      restaurantId,
-      items: items.map((i) => ({
-        foodItem: i.menuItem.id,
-        quantity: i.quantity,
-        note: i.specialInstructions,
-      })),
-    });
+    // Price comes from the server cart, so mirror the device cart there first
+    // (the checkout screen did the same while loading its bill).
+    await cartApi.sync(restaurantId, items);
 
     // Reuse an existing backend address when the selected one is real,
     // otherwise persist the (otherwise local) delivery location first.
