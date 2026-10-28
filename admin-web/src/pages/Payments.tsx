@@ -22,10 +22,23 @@ interface PaymentRow {
   paidAt?: string | null
   createdAt: string
   user?: { _id?: string; name?: string; phone?: string } | null
+  order?: { _id?: string; orderNumber?: string; total?: number; paymentStatus?: string } | null
 }
 
 const STATUSES = ['paid', 'pending', 'failed', 'refunded', 'cancelled']
-const METHODS = ['cash', 'wallet', 'easypaisa', 'jazzcash', 'card']
+const METHODS = ['cash', 'wallet', 'easypaisa', 'jazzcash', 'card', 'demo']
+
+/** Amber pill for simulated money — never styled like a real charge. */
+function DemoBadge() {
+  return (
+    <span
+      className="inline-flex items-center rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700"
+      title="Simulated payment for testing. No real money was transferred."
+    >
+      Demo — not real money
+    </span>
+  )
+}
 
 /** Every payment attempt, with the method and the gateway answer. */
 export default function Payments() {
@@ -60,12 +73,31 @@ export default function Payments() {
       ),
     },
     {
+      key: 'order',
+      label: 'Order',
+      render: (row) =>
+        row.order?.orderNumber ? (
+          <Link
+            to="/orders"
+            className="font-mono text-[11px] font-semibold text-brand hover:underline"
+            title={`Order ${row.order.orderNumber} (total ${formatCurrency(row.order.total ?? 0)})`}
+          >
+            {row.order.orderNumber}
+          </Link>
+        ) : (
+          <span className="text-ink-subtle">—</span>
+        ),
+    },
+    {
       key: 'method',
       label: 'Method',
       render: (row) => (
-        <span className="inline-flex items-center gap-1.5">
-          <CreditCard className="h-3.5 w-3.5 text-ink-subtle" aria-hidden="true" />
-          {humanizeStatus(row.method ?? '-')}
+        <span className="inline-flex flex-col items-start gap-1">
+          <span className="inline-flex items-center gap-1.5">
+            <CreditCard className="h-3.5 w-3.5 text-ink-subtle" aria-hidden="true" />
+            {humanizeStatus(row.method ?? '-')}
+          </span>
+          {row.method === 'demo' && <DemoBadge />}
         </span>
       ),
     },

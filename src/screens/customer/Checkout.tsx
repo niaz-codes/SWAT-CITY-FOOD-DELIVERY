@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -39,9 +39,10 @@ type MethodKey = CheckoutPaymentMethod;
  * `src/assets/payments/` and swap `short` for an <Image> when you have licensed
  * artwork — the colours below keep the row on-brand until then.
  */
-const BRAND: Record<'easypaisa' | 'jazzcash', { bg: string; fg: string; short: string }> = {
+const BRAND: Record<string, { bg: string; fg: string; short: string }> = {
   easypaisa: { bg: '#3BAE49', fg: '#FFFFFF', short: 'EP' },
   jazzcash: { bg: '#EE1C25', fg: '#FFFFFF', short: 'JC' },
+  demo: { bg: '#B45309', fg: '#FFFFFF', short: 'DEMO' },
 };
 
 const METHODS: {
@@ -49,8 +50,8 @@ const METHODS: {
   label: string;
   note: string;
   /** Field name used to match the backend's `methods` availability list. */
-  gateway: 'easypaisa' | 'jazzcash';
-  brand: (typeof BRAND)['easypaisa'];
+  gateway: 'easypaisa' | 'jazzcash' | 'demo';
+  brand: { bg: string; fg: string; short: string };
 }[] = [
   {
     key: 'easypaisa',
@@ -65,6 +66,18 @@ const METHODS: {
     note: 'Pay securely on the JazzCash page',
     gateway: 'jazzcash',
     brand: BRAND.jazzcash,
+  },
+  /**
+   * Only rendered when the backend reports demo payments as enabled. Every
+   * string screams that no money moves, and the tap still asks for
+   * confirmation before the order is placed.
+   */
+  {
+    key: 'demo',
+    label: 'Demo Pay',
+    note: 'Simulated payment — DEMO — NOT REAL MONEY',
+    gateway: 'demo',
+    brand: BRAND.demo,
   },
 ];
 
@@ -191,9 +204,9 @@ export function CheckoutScreen({ navigation }: Props) {
   const restaurant = quote?.restaurant;
   const total = quote?.total ?? 0;
   // Both integrated gateways settle against a mobile wallet account, so the
-  // payer must always supply the number the debit will be taken from. Easypaisa
-  // MA uses it as `mobileAccountNo`, JazzCash MPAY as the billed MSISDN.
-  const needsPhone = true;
+  // payer must always supply the number the debit will be taken from. Demo Pay
+  // contacts nobody, so it is the odd one out that needs no phone at all.
+  const needsPhone = method !== 'demo';
   const phoneValid = /^(\+?92|0)?3\d{9}$/.test(phone.replace(/[\s-]/g, ''));
   const canSubmit =
     Boolean(deliveryAddress) &&
@@ -223,7 +236,7 @@ export function CheckoutScreen({ navigation }: Props) {
    * for retries of the *same* attempt, so a double tap or a dropped response can
    * never create two payments.
    */
-  const placeOrder = async () => {
+  const submitOrder = async () => {
     if (!deliveryAddress || !canSubmit) return;
     haptics.medium();
     setPlacing(true);
@@ -248,7 +261,8 @@ export function CheckoutScreen({ navigation }: Props) {
 
       // JazzCash is a hosted MPAY checkout, so the payer leaves the app and we
       // wait for them to come back. Easypaisa MA has no redirect at all, so
-      // `handoff` is null and there is simply nothing to open.
+      // `handoff` is null and there is simply nothing to open. Demo pays inside
+      // the server, so there is no browser at all.
       if (result.handoff?.url) {
         await WebBrowser.openBrowserAsync(result.handoff.url);
       }
@@ -261,7 +275,12 @@ export function CheckoutScreen({ navigation }: Props) {
 
       if (verification.status === 'paid') {
         clear();
-        success('Payment successful');
+        if (method === 'demo') {
+          // Never word a demo success like a real charge.
+          success('Demo payment recorded — NOT REAL MONEY');
+        } else {
+          success('Payment successful');
+        }
       } else if (verification.status === 'failed') {
         error(verification.reason ?? 'Payment failed. Your order was not charged.');
       } else {
@@ -273,6 +292,26 @@ export function CheckoutScreen({ navigation }: Props) {
       error(apiErrorMessage(e, 'Could not place your order. Please try again.'));
       setPlacing(false);
     }
+  };
+
+  /**
+   * Demo checkout always restates the contract before anything is simulated: no
+   * real money moves, the order is created for testing, and it shows up in the
+   * admin panel labelled DEMO.
+   */
+  const placeOrder = () => {
+    if (method !== 'demo') {
+      void submitOrder();
+      return;
+    }
+    Alert.alert(
+      'Demo checkout — NOT REAL MONEY',
+      'This places a TEST order and a SIMULATED payment. No real money will be transferred, and no wallet account is involved. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Place demo order', onPress: () => void submitOrder() },
+      ],
+    );
   };
 
   return (
@@ -461,16 +500,30 @@ export function CheckoutScreen({ navigation }: Props) {
         ]}
       >
         <AppButton
-          label={quote ? `Pay · ${formatCurrency(total)}` : 'Preparing your bill…'}
+          label={
+            quote
+              ? method === 'demo'
+                ? `Place demo order · ${formatCurrency(total)}`
+                : `Pay · ${formatCurrency(total)}`
+              : 'Preparing your bill…'
+          }
           onPress={placeOrder}
           size="lg"
           loading={placing}
           disabled={!canSubmit}
         />
+        {method === 'demo' && (
+          <AppText variant="microBold" color={colors.warning} center style={styles.footerNote}>
+            DEMO MODE — NOT REAL MONEY. A test order is created and a simulated payment
+            is recorded against the admin account.
+          </AppText>
+        )}
         <AppText variant="micro" color={colors.textMuted} center style={styles.footerNote}>
           {noGatewayAvailable
             ? 'No payment method is available right now. Please try again later.'
-            : 'You will be taken to the payment page. Your order is confirmed once payment succeeds.'}
+            : method === 'demo'
+              ? 'The order goes through the real pipeline; only the payment is simulated.'
+              : 'You will be taken to the payment page. Your order is confirmed once payment succeeds.'}
         </AppText>
       </Animated.View>
     </View>

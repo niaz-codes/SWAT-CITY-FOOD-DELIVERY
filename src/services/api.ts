@@ -79,6 +79,7 @@ type BackRestaurant = {
   promo?: string;
   emoji?: string;
   gradient?: string[];
+  imageUrl?: string;
 };
 
 type BackFoodItem = {
@@ -90,6 +91,7 @@ type BackFoodItem = {
   price?: number;
   emoji?: string;
   gradient?: string[];
+  imageUrl?: string;
   rating?: number;
   calories?: number;
   prepMin?: number;
@@ -140,6 +142,7 @@ type BackFavorite = {
   price?: number;
   gradient?: string[];
   emoji?: string;
+  imageUrl?: string;
   savedAt?: string | Date;
 };
 
@@ -264,6 +267,7 @@ const mapRestaurant = (r: BackRestaurant): Restaurant => ({
   category: r.category ?? 'Other',
   gradient: asGradient(r.gradient),
   emoji: r.emoji ?? '🍽️',
+  imageUrl: r.imageUrl ?? null,
   featured: Boolean(r.featured),
   tags: Array.isArray(r.tags) ? r.tags : [],
 });
@@ -281,6 +285,7 @@ const mapMenuItem = (f: BackFoodItem): MenuItem => ({
   popular: Boolean(f.popular),
   gradient: asGradient(f.gradient),
   emoji: f.emoji ?? '🍽️',
+  imageUrl: f.imageUrl ?? null,
 });
 
 const mapAddress = (a: BackAddress): Address => ({
@@ -391,6 +396,7 @@ const mapFavorite = (f: BackFavorite): Favorite => ({
   price: f.price != null ? Number(f.price) : undefined,
   gradient: asGradient(f.gradient),
   emoji: f.emoji ?? '⭐',
+  imageUrl: f.imageUrl ?? null,
   savedAt: new Date(f.savedAt ?? Date.now()),
 });
 
@@ -775,7 +781,7 @@ export const foodApi = {
 // Payments
 // ---------------------------------------------------------------------------
 
-export type CheckoutPaymentMethod = 'easypaisa' | 'jazzcash';
+export type CheckoutPaymentMethod = 'easypaisa' | 'jazzcash' | 'demo';
 
 export type GatewayMethodInfo = {
   method: string;
