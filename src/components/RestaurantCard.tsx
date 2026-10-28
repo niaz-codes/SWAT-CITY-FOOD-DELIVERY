@@ -50,7 +50,7 @@ export function RestaurantCard({
           ]}
         >
           <View style={styles.featMain}>
-            <ArtTile gradient={restaurant.gradient} emoji={restaurant.emoji} size={64} />
+          <ArtTile gradient={restaurant.gradient} emoji={restaurant.emoji} size={64} imageUrl={restaurant.imageUrl} />
             <View style={styles.featInfo}>
               <AppText variant="title" weight="bold" numberOfLines={1} color={colors.textPrimary}>
                 {restaurant.name}
@@ -100,7 +100,7 @@ export function RestaurantCard({
           { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
         ]}
       >
-        <ArtTile gradient={restaurant.gradient} emoji={restaurant.emoji} size={76} />
+        <ArtTile gradient={restaurant.gradient} emoji={restaurant.emoji} size={76} imageUrl={restaurant.imageUrl} />
         <View style={styles.rowInfo}>
           <AppText variant="title" weight="bold" numberOfLines={1} color={colors.textPrimary}>
             {restaurant.name}

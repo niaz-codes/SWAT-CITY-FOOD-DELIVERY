@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Image, Pressable, StyleSheet, View } from 'react-native';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -62,8 +62,16 @@ export function FoodDetailsScreen({ navigation, route }: Props) {
                 style={styles.hero}
               >
                 <View style={styles.heroRing} />
-                <View style={styles.disc}>
-                  <AppText style={styles.discEmoji}>{item.emoji}</AppText>
+                <View style={[styles.disc, item.imageUrl ? styles.discOverflow : null]}>
+                  {item.imageUrl ? (
+                    <Image
+                      source={{ uri: item.imageUrl }}
+                      resizeMode="cover"
+                      style={styles.discImage}
+                    />
+                  ) : (
+                    <AppText style={styles.discEmoji}>{item.emoji}</AppText>
+                  )}
                 </View>
                 {item.popular && (
                   <View style={styles.popularBadge}>
@@ -241,6 +249,21 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0,0,0,0.25)',
     textShadowOffset: { width: 0, height: 3 },
     textShadowRadius: 6,
+  },
+  /**
+   * A real photo slightly overflows the disc so the dish reads as the hero
+   * object rather than a tiny stamp inside the ring.
+   */
+  discOverflow: {
+    width: 128,
+    height: 128,
+    borderRadius: 64,
+    backgroundColor: 'transparent',
+  },
+  discImage: {
+    width: 128,
+    height: 128,
+    borderRadius: 64,
   },
   popularBadge: {
     position: 'absolute',

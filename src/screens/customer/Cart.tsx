@@ -136,6 +136,7 @@ export function CartScreen({ navigation }: Props) {
               emoji={ci.menuItem.emoji}
               size={58}
               rounded={14}
+              imageUrl={ci.menuItem.imageUrl}
             />
             <View style={styles.itemInfo}>
               <View style={styles.itemTitleRow}>

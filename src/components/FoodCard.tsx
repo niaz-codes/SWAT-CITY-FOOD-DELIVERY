@@ -47,7 +47,7 @@ export function FoodCard({ item, variant = 'grid', onPress, onAdd, quantity = 0 
             { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
           ]}
         >
-          <ArtTile gradient={item.gradient} emoji={item.emoji} size={56} rounded={14} />
+          <ArtTile gradient={item.gradient} emoji={item.emoji} size={56} rounded={14} imageUrl={item.imageUrl} />
           {item.popular && (
             <View style={[styles.popular, { backgroundColor: colors.accentSoft }]}>
               <AppText variant="microBold" color={colors.warning} uppercase>
@@ -108,7 +108,7 @@ export function FoodCard({ item, variant = 'grid', onPress, onAdd, quantity = 0 
           { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
         ]}
       >
-        <ArtTile gradient={item.gradient} emoji={item.emoji} size={72} />
+        <ArtTile gradient={item.gradient} emoji={item.emoji} size={72} imageUrl={item.imageUrl} />
         <View style={styles.rowInfo}>
           <AppText variant="title" weight="bold" numberOfLines={1} color={colors.textPrimary}>
             {item.name}

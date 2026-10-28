@@ -99,7 +99,7 @@ function FavoriteTile({
       style={[styles.tile, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
     >
       <Pressable onPress={onOpen} style={styles.tileBody}>
-        <ArtTile gradient={favorite.gradient} emoji={favorite.emoji} size={54} rounded={16} />
+        <ArtTile gradient={favorite.gradient} emoji={favorite.emoji} size={54} rounded={16} imageUrl={favorite.imageUrl} />
         <AppText variant="title" weight="bold" color={colors.textPrimary} numberOfLines={1}>
           {favorite.name}
         </AppText>

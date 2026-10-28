@@ -35,6 +35,8 @@ export type Restaurant = {
   category: string;
   gradient: [string, string];
   emoji: string;
+  /** Real photo (Supabase Storage). Null keeps the emoji/gradient tile. */
+  imageUrl?: string | null;
   featured?: boolean;
   tags: string[];
 };
@@ -52,6 +54,8 @@ export type MenuItem = {
   popular?: boolean;
   gradient: [string, string];
   emoji: string;
+  /** Real photo (Supabase Storage). Null keeps the emoji/gradient tile. */
+  imageUrl?: string | null;
 };
 
 export type CartItem = {
@@ -270,6 +274,8 @@ export type Favorite = {
   price?: number;
   gradient: [string, string];
   emoji: string;
+  /** Real photo (Supabase Storage); null keeps the emoji tile. */
+  imageUrl?: string | null;
   savedAt: Date;
 };
 

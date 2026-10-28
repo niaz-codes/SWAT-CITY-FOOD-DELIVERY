@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Image, Pressable, StyleSheet, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -63,6 +63,7 @@ export function RestaurantScreen({ navigation, route }: Props) {
           cuisine={current.cuisine}
           gradient={current.gradient}
           emoji={current.emoji}
+          imageUrl={current.imageUrl}
           rating={current.rating}
           reviews={current.reviews}
           deliveryTimeMin={current.deliveryTimeMin}
@@ -205,6 +206,7 @@ type HeroProps = {
   cuisine: string;
   gradient: [string, string];
   emoji: string;
+  imageUrl?: string | null;
   rating: number;
   reviews: number;
   deliveryTimeMin: number;
@@ -220,6 +222,7 @@ function Hero({
   cuisine,
   gradient,
   emoji,
+  imageUrl,
   rating,
   reviews,
   deliveryTimeMin,
@@ -242,7 +245,11 @@ function Hero({
         <View style={styles.heroRing} />
         <View style={styles.heroRingTwo} />
         <View style={styles.heroArtWrap}>
-          <AppText style={styles.heroEmoji}>{emoji}</AppText>
+          {imageUrl ? (
+            <Image source={{ uri: imageUrl }} resizeMode="cover" style={styles.heroImage} />
+          ) : (
+            <AppText style={styles.heroEmoji}>{emoji}</AppText>
+          )}
         </View>
       </LinearGradient>
       <View
@@ -371,6 +378,11 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0,0,0,0.25)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 5,
+  },
+  heroImage: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
   },
   heroBody: {
     borderRadius: 22,
