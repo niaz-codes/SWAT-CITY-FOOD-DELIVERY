@@ -51,33 +51,29 @@ async function storageError(res: Response): Promise<Error> {
   return new Error(message);
 }
 
-export async function uploadFile(
-  file: Express.Multer.File,
-  folder = 'swat-city',
+export async function uploadBuffer(
+  buffer: Buffer,
+  options: { mimetype: string; ext: string; folder?: string },
 ): Promise<UploadedImage> {
-  if (!file?.buffer || file.buffer.length === 0) {
+  if (!buffer || buffer.length === 0) {
     throw new Error('No file to upload');
   }
 
-  let ext = 'bin';
-  if (file.mimetype && EXT_BY_MIME[file.mimetype]) {
-    ext = EXT_BY_MIME[file.mimetype];
-  } else if (file.originalname && file.originalname.includes('.')) {
-    ext = file.originalname.split('.').pop()?.toLowerCase() || 'bin';
-  }
-
-  const publicId = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
+  const ext = EXT_BY_MIME[options.mimetype] ?? options.ext ?? 'bin';
+  const publicId = `${options.folder ?? 'swat-city'}/${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}.${ext}`;
 
   const res = await fetch(storageUrl(publicId), {
     method: 'POST',
     headers: {
       apikey: env.SUPABASE_SECRET_KEY,
       Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
-      'Content-Type': file.mimetype || 'application/octet-stream',
+      'Content-Type': options.mimetype || 'application/octet-stream',
       'x-upsert': 'false',
       'cache-control': 'public, max-age=31536000, immutable',
     },
-    body: file.buffer,
+    body: buffer,
   });
 
   if (!res.ok) {
@@ -92,6 +88,20 @@ export async function uploadFile(
     .map((part) => encodeURIComponent(part))
     .join('/')}`;
   return { url, publicId };
+}
+
+export async function uploadFile(
+  file: Express.Multer.File,
+  folder = 'swat-city',
+): Promise<UploadedImage> {
+  let ext = 'bin';
+  if (file.mimetype && EXT_BY_MIME[file.mimetype]) {
+    ext = EXT_BY_MIME[file.mimetype];
+  } else if (file.originalname && file.originalname.includes('.')) {
+    ext = file.originalname.split('.').pop()?.toLowerCase() || 'bin';
+  }
+
+  return uploadBuffer(file.buffer, { mimetype: file.mimetype || 'application/octet-stream', ext, folder });
 }
 
 export async function deleteFile(publicId: string): Promise<void> {
