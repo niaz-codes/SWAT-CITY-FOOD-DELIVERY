@@ -23,11 +23,16 @@ export type OrderStatus = (typeof ORDER_STATUSES)[number];
  * up: the Order enum is shared with stored data, so removing a value would make
  * existing documents fail validation. New orders may not select it.
  */
-export const PAYMENT_METHODS = ['cash', 'card', 'wallet', 'easypaisa', 'jazzcash'] as const;
+export const PAYMENT_METHODS = ['cash', 'card', 'wallet', 'easypaisa', 'jazzcash', 'demo'] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
-/** Methods that require a verified gateway round-trip before an order is paid. */
-export const GATEWAY_PAYMENT_METHODS = ['easypaisa', 'jazzcash'] as const;
+/**
+ * Methods that require a verified payment round-trip before an order is paid.
+ * `demo` belongs here because a demo payment settles on the server (the backend
+ * IS its verifier) instead of on delivery — it just never talks to a real bank,
+ * and `demoPaymentsEnabled` gates when it exists at all.
+ */
+export const GATEWAY_PAYMENT_METHODS = ['easypaisa', 'jazzcash', 'demo'] as const;
 export type GatewayPaymentMethod = (typeof GATEWAY_PAYMENT_METHODS)[number];
 
 /**
@@ -35,7 +40,7 @@ export type GatewayPaymentMethod = (typeof GATEWAY_PAYMENT_METHODS)[number];
  * `card` is deliberately absent: no card gateway is integrated, and the old code
  * silently recorded card orders as cash payments.
  */
-export const ORDER_CHECKOUT_METHODS = ['cash', 'wallet', 'easypaisa', 'jazzcash'] as const;
+export const ORDER_CHECKOUT_METHODS = ['cash', 'wallet', 'easypaisa', 'jazzcash', 'demo'] as const;
 export type OrderCheckoutMethod = (typeof ORDER_CHECKOUT_METHODS)[number];
 
 export function isGatewayPaymentMethod(value: unknown): value is GatewayPaymentMethod {

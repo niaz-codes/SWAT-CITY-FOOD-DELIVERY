@@ -124,6 +124,17 @@ const envSchema = z.object({
   /** How long a pending online payment stays open before it can be abandoned. */
   PAYMENT_EXPIRY_MINUTES: z.coerce.number().int().positive().default(30),
 
+  // --- Demo payments (TESTING ONLY — never real money) ----------------------
+  /**
+   * Master switch for the simulated "Demo Pay" checkout method. When "true",
+   * GET /payments/methods offers a clearly-labelled demo method and a demo
+   * payment settles against the ADMIN's wallet ledger — with a
+   * "DEMO — NOT REAL MONEY" label on every record. No gateway is contacted and
+   * no card/wallet credential is ever involved, so money can NEVER actually
+   * move. Must stay "false" in production once real gateways are wired up.
+   */
+  DEMO_PAYMENTS_ENABLED: z.enum(['true', 'false']).default('false'),
+
   // --- Google Sign-In (customer accounts only) -------------------------------
   /**
    * OAuth client ID the app sends to Google. This is a **Web** OAuth client:
@@ -230,6 +241,12 @@ export const easypaisaFullyConfigured = Boolean(
 export const jazzcashConfigured = Boolean(
   env.JAZZCASH_MERCHANT_ID && env.JAZZCASH_PASSWORD && env.JAZZCASH_INTEGRITY_SALT,
 );
+
+/**
+ * Demo payments are OFF unless explicitly switched on in the server env.
+ * Deliberately server-side only: the client cannot enable demo mode.
+ */
+export const demoPaymentsEnabled = env.DEMO_PAYMENTS_ENABLED === 'true';
 
 /**
  * Every client ID whose ID tokens this backend will accept. Verification is a

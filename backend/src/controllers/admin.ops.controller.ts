@@ -138,6 +138,7 @@ export const adminListPayments = asyncHandler(async (req: AuthRequest, res: Resp
   const [payments, total] = await Promise.all([
     PaymentModel.find(query)
       .populate('user', 'name phone')
+      .populate('order', 'orderNumber total paymentStatus')
       .sort({ createdAt: -1 })
       .skip((p - 1) * l)
       .limit(l)

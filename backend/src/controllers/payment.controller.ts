@@ -91,6 +91,9 @@ export const createOrderPayment = asyncHandler(async (req: AuthRequest, res: Res
       orderNumber: updatedOrder.orderNumber,
       paymentStatus: updatedOrder.paymentStatus,
     },
+    // Present the moment method === 'demo': the client must show this label.
+    demoMode:
+      method === 'demo' ? { active: true, label: 'DEMO — NOT REAL MONEY' } : null,
     handoff: handoffPayload,
   });
 });

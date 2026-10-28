@@ -4,16 +4,19 @@ import {
   CartModel,
   OrderModel,
   PaymentModel,
+  GATEWAY_PAYMENT_METHODS,
   type GatewayPaymentMethod,
   type Payment,
 } from '../models';
+import { recordDemoAdminLedger } from './payments/demo';
 import { getProvider } from './payments';
 import type { GatewayInitiateResult, GatewayVerifyResult, InitiateInput } from './payments/types';
 import { AppError, BAD_REQUEST, CONFLICT, NOT_FOUND } from '../utils/AppError';
 import { notifyUser } from './notification.service';
 import { notifyAdminsNewOrder } from './order.service';
 
-const GATEWAYS: readonly GatewayPaymentMethod[] = ['easypaisa', 'jazzcash'];
+/** Every method that settles server-side (real gateways + the demo provider). */
+const GATEWAYS: readonly GatewayPaymentMethod[] = GATEWAY_PAYMENT_METHODS;
 
 type OrderDoc = Awaited<ReturnType<typeof OrderModel.findById>> & Record<string, unknown>;
 type PaymentDoc = Awaited<ReturnType<typeof PaymentModel.findById>> & Record<string, unknown>;
@@ -291,6 +294,15 @@ export async function verifyOnlinePayment(input: {
         // A gateway order only becomes real work once the money is confirmed,
         // so the admin alert is sent here rather than at creation time.
         await notifyAdminsNewOrder(order);
+
+        // Demo payments are recorded against the ADMIN's wallet ledger the
+        // moment the (simulated) money settles. A failure to credit must never
+        // roll the order back to unpaid, so errors are logged, not rethrown.
+        if (input.method === 'demo') {
+          await recordDemoAdminLedger(order, payment).catch((error: unknown) => {
+            console.error('[payments] demo admin ledger failed:', error);
+          });
+        }
       }
     }
   } else if (result.status === 'failed') {
@@ -350,7 +362,7 @@ export function generateTransactionRef(
     String(orderNumberOrId)
       .replace(/[^A-Za-z0-9]/g, '')
       .slice(0, 16) || 'ORDER';
-  const prefix = method === 'easypaisa' ? 'EP' : 'JC';
+  const prefix = method === 'easypaisa' ? 'EP' : method === 'jazzcash' ? 'JC' : 'DM';
   const suffix = randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
   return `${clean}-${prefix}-${suffix}`;
 }

@@ -1,5 +1,5 @@
 ﻿import type { Response } from 'express';
-import { OrderModel, type OrderStatus } from '../models';
+import { OrderModel, isGatewayPaymentMethod, type OrderStatus } from '../models';
 import type { AuthRequest } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
@@ -72,11 +72,12 @@ export const createOrder = asyncHandler(async (req: AuthRequest, res: Response) 
     idempotencyKey: req.body.idempotencyKey,
   });
 
-  // Online wallets are started AFTER the order exists, so the transaction is
+  // Online payments are started AFTER the order exists, so the transaction is
   // bound to a real order total. The response carries whatever the gateway needs
-  // to take the payer to their wallet.
+  // to take the payer to their wallet (demo has none: it settles server-side
+  // and the app just confirms the result).
   let handoff: Record<string, unknown> | null = null;
-  if (order.paymentMethod === 'easypaisa' || order.paymentMethod === 'jazzcash') {
+  if (isGatewayPaymentMethod(order.paymentMethod)) {
     const method = order.paymentMethod;
     const result = await initiateOnlinePayment({
       userId: req.user._id,
@@ -114,6 +115,11 @@ export const createOrder = asyncHandler(async (req: AuthRequest, res: Response) 
     }
   }
 
+  const demoMode =
+    order.paymentMethod === 'demo'
+      ? { active: true, label: 'DEMO — NOT REAL MONEY' }
+      : null;
+
   sendSuccess(res, {
     order: {
       _id: order._id,
@@ -140,6 +146,7 @@ export const createOrder = asyncHandler(async (req: AuthRequest, res: Response) 
       amount: payment.amount,
       currency: payment.currency,
     },
+    demoMode,
     handoff,
   });
 });

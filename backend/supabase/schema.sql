@@ -280,7 +280,7 @@ create table if not exists public.orders (
   distanceKm              double precision not null default 0,
   estimatedMinutes        double precision not null default 30,
   paymentMethod           text not null default 'cash'
-      check (paymentMethod in ('cash','card','wallet','easypaisa','jazzcash')),
+      check (paymentMethod in ('cash','card','wallet','easypaisa','jazzcash','demo')),
   paymentStatus           text not null default 'pending'
       check (paymentStatus in ('pending','processing','paid','failed','cancelled','refunded')),
   payment                 uuid,
@@ -408,7 +408,7 @@ create table if not exists public.payments (
   kind                text not null check (kind in ('order','ride','topup','refund')),
   "order"             uuid,
   ride                uuid,
-  method              text not null check (method in ('easypaisa','jazzcash','cash','card','wallet')),
+  method              text not null check (method in ('easypaisa','jazzcash','cash','card','wallet','demo')),
   status              text not null default 'pending'
       check (status in ('pending','processing','paid','failed','cancelled','refunded')),
   amount              double precision not null,
@@ -716,6 +716,46 @@ begin
     execute format('alter table public.%I enable row level security', t);
   end loop;
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- DEMO PAYMENTS (TESTING ONLY — never real money)
+-- allowing method 'demo' + exactly-once admin ledger guard. The code paths that
+-- write 'demo' rows are gated behind DEMO_PAYMENTS_ENABLED on the server.
+-- ---------------------------------------------------------------------------
+do $$
+declare c text;
+begin
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.orders'::regclass and contype = 'c'
+      and pg_get_constraintdef(oid) ilike '%paymentmethod%'
+      and pg_get_constraintdef(oid) not ilike '%demo%'
+  loop
+    execute format('alter table public.orders drop constraint %I', c);
+  end loop;
+end $$;
+alter table public.orders
+  add check (paymentMethod in ('cash','card','wallet','easypaisa','jazzcash','demo'));
+
+do $$
+declare c text;
+begin
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.payments'::regclass and contype = 'c'
+      and pg_get_constraintdef(oid) ilike '%method%'
+      and pg_get_constraintdef(oid) not ilike '%demo%'
+  loop
+    execute format('alter table public.payments drop constraint %I', c);
+  end loop;
+end $$;
+alter table public.payments
+  add check (method in ('easypaisa','jazzcash','cash','card','wallet','demo'));
+
+-- One `demo_<transactionRef>` commission credit per (admin) user, exactly like
+-- the topup guard, so a re-verified demo payment can never credit twice.
+create unique index if not exists wallet_transactions_demo_ref_key
+  on public.wallet_transactions ("user", reference) where reference like 'demo\_%';
 
 -- ---------------------------------------------------------------------------
 -- Storage bucket for food/rider imagery (replaces Cloudinary).

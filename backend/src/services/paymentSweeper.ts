@@ -1,4 +1,4 @@
-import { PaymentModel, OrderModel, isGatewayPaymentMethod } from '../models';
+import { PaymentModel, OrderModel, GATEWAY_PAYMENT_METHODS, isGatewayPaymentMethod } from '../models';
 import { notifyUser } from './notification.service';
 import { verifyOnlinePayment } from './payment.service';
 
@@ -20,8 +20,10 @@ export async function sweepExpiredPayments(): Promise<{ expired: number; recover
   const cutoff = new Date();
 
   // Only online payments are swept; COD/wallet orders have nothing to expire.
+  // `demo` is swept too: recovery re-inquires (demo verifies against itself,
+  // crediting the admin ledger), and anything still open is expired normally.
   const stale = await PaymentModel.find({
-    method: { $in: ['easypaisa', 'jazzcash'] },
+    method: { $in: [...GATEWAY_PAYMENT_METHODS] },
     status: { $in: ['pending', 'processing'] },
     expiresAt: { $ne: null, $lt: cutoff },
   }).limit(200);
