@@ -160,7 +160,7 @@ async function main(): Promise<void> {
   const payment = unwrap(placed.body).payment as Record<string, unknown> | undefined;
   const demoMode = unwrap(placed.body).demoMode as Record<string, unknown> | undefined;
   const orderId = text(order?._id ?? order?.id);
-  const transactionRef = text(payment?.transactionRef);
+  let transactionRef = text(payment?.transactionRef);
   check('demo order created', placed.status === 201 || placed.status === 200, `status=${placed.status}`);
   check('payment method is demo', text(payment?.method) === 'demo');
   check('create-order response labels DEMO — NOT REAL MONEY', text(demoMode?.label) === 'DEMO — NOT REAL MONEY');
@@ -176,6 +176,9 @@ async function main(): Promise<void> {
     text(verifyData.status) === 'paid' || text(verifyData.payment?.status) === 'paid',
     JSON.stringify(verifyData).slice(0, 200),
   );
+  // The settled payment objects carry the authoritative ref on either endpoint.
+  const verifyRef = text(verifyData.payment?.transactionRef) || transactionRef;
+  if (verifyRef) transactionRef = verifyRef;
 
   // ---- 7. verify again → idempotent -----------------------------------------
   const verify2 = await call(`/payments/orders/${orderId}/payment/verify`, { method: 'POST', token, body: {} });

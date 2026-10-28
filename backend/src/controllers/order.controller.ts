@@ -152,6 +152,7 @@ export const createOrder = asyncHandler(async (req: AuthRequest, res: Response) 
       method: payment.method,
       amount: payment.amount,
       currency: payment.currency,
+      transactionRef: payment.transactionRef ?? null,
     },
     demoMode,
     handoff,
