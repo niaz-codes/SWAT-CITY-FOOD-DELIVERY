@@ -52,7 +52,7 @@
     ],
     "android": {
       "package": "com.swatcity.delivery",
-      "versionCode": 2,
+      "versionCode": 3,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "ACCESS_COARSE_LOCATION",
