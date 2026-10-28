@@ -74,9 +74,19 @@ export async function initiateOnlinePayment({
   const expiry = new Date(now.getTime() + env.PAYMENT_EXPIRY_MINUTES * 60_000);
 
   // Reuse an existing in-flight payment when the caller supplies a stable key.
+  // NOTE: the search is keyed on (idempotencyKey, user), WITHOUT the order:
+  // `placeOrder` writes the intent row BEFORE the order exists, so the row's
+  // `order` field is still null at this point — matching it on the order here
+  // would miss the intent and collide with its unique idempotency key below.
   let payment = idempotencyKey
-    ? await PaymentModel.findOne({ idempotencyKey, user: userId, order: order._id })
+    ? await PaymentModel.findOne({ idempotencyKey, user: userId })
     : null;
+
+  if (payment && payment.order && String(payment.order) !== String(orderId)) {
+    // Idempotency keys are one checkout attempt = one order. Never attach the
+    // same payment row to a second order.
+    throw CONFLICT('This checkout attempt already belongs to another order.');
+  }
 
   if (payment && ['failed', 'cancelled'].includes(payment.status)) {
     // A terminal payment cannot be resurrected; the caller must start a new attempt.
@@ -94,12 +104,32 @@ export async function initiateOnlinePayment({
       status: { $in: ['pending', 'processing'] },
     }).sort({ createdAt: -1 });
 
-    if (existing) {
-      existing.idempotencyKey = existing.idempotencyKey ?? idempotencyKey;
-      existing.amount = order.total;
-      existing.expiresAt = expiry;
-      await existing.save();
-      payment = existing;
+    if (existing) payment = existing;
+  }
+
+  if (payment) {
+    // Bind the intent row to this order and stamp its transactionRef now: the
+    // row was written before the order existed, so both were null so far — and
+    // every verify/inquiry path is keyed on the transactionRef.
+    const transactionRef =
+      payment.transactionRef ??
+      generateTransactionRef(order.orderNumber || String(order._id), method);
+    if (
+      payment.order !== order._id ||
+      payment.transactionRef !== transactionRef ||
+      !payment.idempotencyKey
+    ) {
+      await PaymentModel.updateOne(
+        { _id: payment._id },
+        {
+          $set: {
+            order: order._id,
+            transactionRef,
+            idempotencyKey: payment.idempotencyKey ?? idempotencyKey,
+          },
+        },
+      );
+      payment = (await PaymentModel.findById(payment._id)) as PaymentDoc;
     }
   }
 
