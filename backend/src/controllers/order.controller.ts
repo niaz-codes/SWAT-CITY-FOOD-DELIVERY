@@ -76,8 +76,15 @@ export const createOrder = asyncHandler(async (req: AuthRequest, res: Response) 
   // bound to a real order total. The response carries whatever the gateway needs
   // to take the payer to their wallet (demo has none: it settles server-side
   // and the app just confirms the result).
+  //
+  // A replayed checkout attempt (same idempotency key) returns the already
+  // settled pair — the payment is paid/failed/terminal, so re-initiating would
+  // answer "Order already paid" and turn a legitimate replay into an error.
+  const paymentSettled = ['paid', 'failed', 'refunded', 'cancelled'].includes(
+    String(payment.status),
+  );
   let handoff: Record<string, unknown> | null = null;
-  if (isGatewayPaymentMethod(order.paymentMethod)) {
+  if (!paymentSettled && isGatewayPaymentMethod(order.paymentMethod)) {
     const method = order.paymentMethod;
     const result = await initiateOnlinePayment({
       userId: req.user._id,

@@ -207,7 +207,7 @@ async function main(): Promise<void> {
   check(
     'same idempotency key replays the SAME order (no duplicate order)',
     replayId === orderId,
-    `replayed=${replayId}`,
+    `status=${dupOrder.status} replayed=${replayId || '(empty)'} msg=${text(dupOrder.body.message).slice(0, 120)}`,
   );
 
   // ---- 10. admin ledger: exactly one demo credit ------------------------------
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
   });
   await client.connect();
   const ledger = await client.query(
-    `SELECT id, amount, type, description, metadata
+    `SELECT _id, amount, type, description, metadata
        FROM public.wallet_transactions
       WHERE "user" = $1 AND reference = $2`,
     [adminId, `demo_${transactionRef}`],
