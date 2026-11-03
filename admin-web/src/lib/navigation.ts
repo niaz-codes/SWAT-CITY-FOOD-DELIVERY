@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   ArrowDownToLine,
+  Banknote,
   BarChart3,
   Bell,
   Bike,
@@ -105,6 +106,12 @@ export const NAV_SECTIONS: NavSection[] = [
         to: '/payments/verification',
         icon: ShieldCheck,
         description: 'Approve or reject direct UBL/Easypaisa/JazzCash transfer receipts',
+      },
+      {
+        name: 'Payment Methods',
+        to: '/payments/methods',
+        icon: Banknote,
+        description: 'Choose payment methods or edit the receiving accounts customers transfer into',
       },
       {
         name: 'Payments',

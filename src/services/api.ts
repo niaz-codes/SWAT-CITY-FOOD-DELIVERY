@@ -715,6 +715,31 @@ export const addressApi = {
     return (res.data.addresses ?? []).map(mapAddress);
   },
 
+  /**
+   * Saves a delivery address for THIS customer (server-validated: full text,
+   * tag and coordinates). The checkout screen uses this so a fresh account can
+   * become deliverable in-flow instead of being stuck with a disabled button.
+   */
+  async create(input: {
+    label?: string;
+    full: string;
+    area?: string;
+    tag: 'home' | 'work' | 'other' | 'frequent';
+    lat: number;
+    lng: number;
+  }): Promise<Address> {
+    const res = await httpPost<{ address?: BackAddress }>('/customer/addresses', {
+      label: input.label,
+      full: input.full,
+      area: input.area,
+      tag: input.tag,
+      lat: input.lat,
+      lng: input.lng,
+    });
+    if (!res.data.address) throw new Error('Could not save the address');
+    return mapAddress(res.data.address);
+  },
+
   async searchPlaces(q: string): Promise<Address[]> {
     const query = q.trim();
     if (!query) return [];
@@ -819,6 +844,17 @@ export type TransferAccount = {
   iban?: string;
   branch?: string;
   instructions?: string;
+};
+
+/**
+ * One direct-transfer row the checkout may offer, exactly as
+ * `GET /payments/transfer-methods` returns them. Only ENABLED methods are
+ * served (the admin manages these from the panel without an app update).
+ */
+export type TransferMethodOption = {
+  method: string;
+  label: string;
+  enabled: boolean;
 };
 
 /**
@@ -1006,6 +1042,20 @@ export type ManualTransferSubmitResult = {
  * receiving account details only ever travel to the order's own customer.
  */
 export const transferApi = {
+  /**
+   * The direct-transfer methods the checkout may offer RIGHT NOW
+   * (database-backed, admin-managed). A channel the admin disabled simply does
+   * not appear; callers fall back to the built-in set on network failure.
+   */
+  async methods(): Promise<TransferMethodOption[]> {
+    const res = await httpGet<{ methods?: TransferMethodOption[] }>('/payments/transfer-methods');
+    return (res.data.methods ?? []).map((m) => ({
+      method: m.method,
+      label: m.label ?? m.method,
+      enabled: Boolean(m.enabled),
+    }));
+  },
+
   /** Transfer instructions + current proof state for one order. */
   async details(orderId: string): Promise<TransferInstructions> {
     const res = await httpGet<TransferInstructions>(`/payments/orders/${orderId}/transfer`);
@@ -1093,7 +1143,7 @@ export const orderApi = {
     total: number,
     deliveryFee: number,
     distanceKm: number,
-    paymentMethod: CheckoutPaymentMethod = 'easypaisa',
+    paymentMethod: CheckoutPaymentMethod = 'ubl',
     extra: { customerPhone?: string; customerEmail?: string; idempotencyKey?: string } = {},
   ): Promise<PlaceOrderResult> {
     // No fallback: a fabricated order would report a checkout success that no

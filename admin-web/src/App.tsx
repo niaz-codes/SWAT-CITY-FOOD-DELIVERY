@@ -15,6 +15,7 @@ import Riders from './pages/Riders'
 import Customers from './pages/Customers'
 import Payments from './pages/Payments'
 import PaymentVerification from './pages/PaymentVerification'
+import PaymentMethods from './pages/PaymentMethods'
 import Wallets from './pages/Wallets'
 import Withdrawals from './pages/Withdrawals'
 import Promotions from './pages/Promotions'
@@ -177,6 +178,7 @@ export default function App() {
             <Route path="customers" element={<Customers />} />
             <Route path="payments" element={<Payments />} />
             <Route path="payments/verification" element={<PaymentVerification />} />
+            <Route path="payments/methods" element={<PaymentMethods />} />
             <Route path="wallets" element={<Wallets />} />
             <Route path="withdrawals" element={<Withdrawals />} />
             <Route path="promotions" element={<Promotions />} />

@@ -27,6 +27,7 @@ import {
   verifyJazzCashReturnSignature,
 } from '../services/payments';
 import { createHandoffToken, readHandoffToken } from '../services/payments/handoffToken';
+import { enabledTransferMethods } from '../services/paymentSettings.service';
 import { creditTopupIfNeeded } from '../services/topup.service';
 import { env, publicApiUrl } from '../config/env';
 
@@ -35,6 +36,23 @@ const GATEWAY_METHODS = GATEWAY_PAYMENT_METHODS;
 /** GET /payments/methods — which gateways are usable right now. */
 export const listPaymentMethods = asyncHandler(async (_req: AuthRequest, res: Response) => {
   sendSuccess(res, { methods: availableGateways() });
+});
+
+/** GET /payments/transfer-methods — the DIRECT-transfer methods the checkout
+ * may offer right now. Database-backed (admin-managed), so a channel the admin
+ * disabled simply does not appear and nothing invents account numbers. */
+export const listTransferMethods = asyncHandler(async (_req: AuthRequest, res: Response) => {
+  const methods = await enabledTransferMethods();
+  sendSuccess(res, {
+    methods: methods.map((m) => ({
+      method: m.method,
+      channel: m.channel,
+      label: m.label,
+      enabled: m.enabled,
+      // Receipt + reference are always part of the direct-transfer flow.
+      requiresReceipt: true,
+    })),
+  });
 });
 
 /** POST /orders/:id/payment — create a payment and get the gateway handoff. */

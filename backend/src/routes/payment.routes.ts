@@ -8,6 +8,7 @@ import {
   getOrderTransferReceipt,
   jazzCashReturn,
   listPaymentMethods,
+  listTransferMethods,
   renderGatewayHandoff,
   submitOrderTransferProof,
   verifyOrderPayment,
@@ -38,6 +39,7 @@ router.post('/easypaisa/notify', easypaisaNotify);
 router.use(requireAuth, requireCustomer, paymentRateLimiter);
 
 router.get('/methods', listPaymentMethods);
+router.get('/transfer-methods', listTransferMethods);
 
 router.post('/orders/:id/payment', validate(initiatePaymentSchema), createOrderPayment);
 router.get('/orders/:id/payment', getOrderPayment);

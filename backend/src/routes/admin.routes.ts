@@ -74,6 +74,11 @@ import {
   uploadRiderAvatar,
 } from '../controllers/admin.controller';
 import { requireAdmin, requireAuth } from '../middleware/auth';
+import {
+  adminGetPaymentMethods,
+  adminUpdatePaymentMethod,
+  adminUpdateTransfersMaster,
+} from '../controllers/paymentSettings.controller';
 import { validate } from '../middleware/validate';
 import { upload } from '../middleware/upload';
 import {
@@ -250,6 +255,33 @@ router.post(
   validate(idParamSchema, 'params'),
   validate(z.object({ payoutReference: z.string().trim().min(3).max(120) })),
   adminPayWithdrawal,
+);
+
+// ---------------------------------------------------------------------------
+// Payment method settings (receiving accounts the checkout serves)
+// ---------------------------------------------------------------------------
+// NOTE: the master switch MUST be registered before :channel, otherwise the
+// param route would swallow the word "master".
+router.put(
+  '/payment-methods/master',
+  validate(z.object({ enabled: z.boolean() })),
+  adminUpdateTransfersMaster,
+);
+router.get('/payment-methods', adminGetPaymentMethods);
+router.put(
+  '/payment-methods/:channel',
+  validate(z.object({ channel: z.enum(['ubl', 'easypaisa', 'jazzcash']) }), 'params'),
+  validate(
+    z.object({
+      enabled: z.boolean(),
+      bankName: z.string().trim().max(80).optional(),
+      accountTitle: z.string().trim().max(60).optional(),
+      accountNumber: z.string().trim().max(60).optional(),
+      iban: z.string().trim().max(34).optional(),
+      branch: z.string().trim().max(80).optional(),
+    }),
+  ),
+  adminUpdatePaymentMethod,
 );
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { env, manualPaymentsEnabled } from '../config/env';
+import { env } from '../config/env';
 import {
   MANUAL_TRANSFER_METHODS,
   OrderModel,
@@ -14,6 +14,7 @@ import {
 import { AppError, BAD_REQUEST, CONFLICT, NOT_FOUND } from '../utils/AppError';
 import { notifyUser } from './notification.service';
 import { createSignedUrl, ensureBucket, uploadBuffer } from './storage.service';
+import { channelLabel, getPaymentMethodConfig, transfersEnabled } from './paymentSettings.service';
 
 /**
  * DIRECT BANK / WALLET TRANSFER (manual, admin-verified).
@@ -148,47 +149,56 @@ export function assertManualProofContext(order: OrderLike, userId: string): void
   }
 }
 
-/** The receiving accounts the customer may pay into (order instructions source). */
-export function transferAccounts(): TransferAccount[] {
-  if (!manualPaymentsEnabled) return [];
-  return [
-    {
-      channel: 'ubl',
-      method: 'ubl',
-      label: 'Direct Bank Transfer (UBL)',
-      bankName: env.MANUAL_PAYMENT_BANK_NAME,
-      accountTitle: env.UBL_ACCOUNT_TITLE,
-      accountNumber: env.UBL_ACCOUNT_NUMBER,
-      ...(env.UBL_IBAN ? { iban: env.UBL_IBAN } : {}),
-      ...(env.UBL_BRANCH ? { branch: env.UBL_BRANCH } : {}),
-      instructions:
-        'Open your banking app and transfer the exact order total to this account, then come back and submit the transaction ID + receipt screenshot. Your order is confirmed only after an admin verifies the transfer against the bank statement.',
-    },
-    {
-      channel: 'easypaisa',
-      method: 'easypaisa_transfer',
-      label: 'Easypaisa (Direct Transfer)',
-      bankName: 'Easypaisa mobile account',
-      accountTitle: env.EASYPAISA_TRANSFER_TITLE,
-      accountNumber: env.EASYPAISA_TRANSFER_NUMBER,
-      instructions:
-        'Send the exact order total from your own Easypaisa app (or an Easypaisa agent) to this number, then submit the transaction ID + receipt screenshot here. A screenshot alone is not payment — an admin confirms it against the account activity first.',
-    },
-    {
-      channel: 'jazzcash',
-      method: 'jazzcash_transfer',
-      label: 'JazzCash (Direct Transfer)',
-      bankName: 'JazzCash mobile account',
-      accountTitle: env.JAZZCASH_TRANSFER_TITLE,
-      accountNumber: env.JAZZCASH_TRANSFER_NUMBER,
-      instructions:
-        'Send the exact order total from your own JazzCash app (or a JazzCash agent) to this number, then submit the transaction ID + receipt screenshot here. A screenshot alone is not payment — an admin confirms it against the account activity first.',
-    },
-  ];
+/** Default how-to text per channel (used until the admin writes their own copy). */
+const CHANNEL_INSTRUCTIONS: Record<ManualTransferChannel, string> = {
+  ubl:
+    'Open your banking app and transfer the exact order total to this account, then come back and submit the transaction ID + receipt screenshot. Your order is confirmed only after an admin verifies the transfer against the bank statement.',
+  easypaisa:
+    'Send the exact order total from your own Easypaisa app (or an Easypaisa agent) to this number, then submit the transaction ID + receipt screenshot here. A screenshot alone is not payment — an admin confirms it against the account activity first.',
+  jazzcash:
+    'Send the exact order total from your own JazzCash app (or a JazzCash agent) to this number, then submit the transaction ID + receipt screenshot here. A screenshot alone is not payment — an admin confirms it against the account activity first.',
+};
+
+/**
+ * Receiving account for one checkout method, straight from the database-backed
+ * settings (admin-saved values win, ENV defaults fill unconfigured channels).
+ *
+ * `evenIfDisabled`: instructions for an order ALREADY placed with this method
+ * must keep rendering even if the admin disables the channel mid-flight — the
+ * customer still has to move money for their existing order. New orders are
+ * gated separately (the method list and checkout validation), so disabling a
+ * channel only stops fresh orders, never strands a pending one.
+ */
+export async function accountForMethod(
+  method: string,
+  opts: { evenIfDisabled?: boolean } = {},
+): Promise<TransferAccount | null> {
+  const channel = manualChannelForMethod(method);
+  if (!channel) return null;
+  if (!(await transfersEnabled())) return null;
+
+  const { config } = await getPaymentMethodConfig(channel);
+  if (!config.enabled && !opts.evenIfDisabled) return null;
+
+  return {
+    channel,
+    method: method as ManualTransferMethod,
+    label: channelLabel(channel),
+    bankName: config.bankName,
+    accountTitle: config.accountTitle,
+    accountNumber: config.accountNumber,
+    ...(config.iban ? { iban: config.iban } : {}),
+    ...(config.branch ? { branch: config.branch } : {}),
+    instructions: CHANNEL_INSTRUCTIONS[channel],
+  };
 }
 
-export function accountForMethod(method: string): TransferAccount | null {
-  return transferAccounts().find((a) => a.method === method) ?? null;
+/** The methods customers may currently pick at checkout (ENABLED only). */
+export async function transferAccounts(): Promise<TransferAccount[]> {
+  const rows = await Promise.all(
+    MANUAL_TRANSFER_METHODS.map((method) => accountForMethod(method)),
+  );
+  return rows.filter((a): a is TransferAccount => a !== null && Boolean(a));
 }
 
 /**
@@ -219,8 +229,13 @@ export async function getTransferInstructions(
 }> {
   const order = await loadOrder(orderId);
   assertManualProofContext(order, userId);
-  const account = accountForMethod(order.paymentMethod);
-  if (!account) throw new AppError('Transfer method is not configured on the server', 422);
+  // Existing orders keep their instructions even if the channel was disabled
+  // mid-flight; only a full master switch (or a channel that never had
+  // details) blocks them.
+  const account = await accountForMethod(order.paymentMethod, { evenIfDisabled: true });
+  if (!account) {
+    throw new AppError('Direct transfer payments are temporarily unavailable. Contact support.', 422);
+  }
 
   const payment = await findManualPayment(String(order._id), userId);
   const submittedAt = (payment?.metadata as any)?.submittedAt ?? null;

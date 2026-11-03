@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -42,14 +43,31 @@ const REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9\-_/\s]{3,59}$/;
  * customer without a clipboard button can still long-press-copy it. */
 function AccountRow({ label, value }: { label: string; value: string }) {
   const { colors } = useThemeColors();
+  const { success } = useToast();
+  const copy = () => {
+    haptics.light();
+    Clipboard.setStringAsync(value).catch(() =>
+      // Rare on Android builds; the selectable text stays as the manual path.
+      success(`${label} — long-press the value to copy it`),
+    );
+    success(`${label} copied`);
+  };
   return (
     <View style={styles.accountRow}>
       <AppText variant="small" color={colors.textMuted}>
         {label}
       </AppText>
-      <AppText variant="body" weight="semiBold" color={colors.textPrimary} selectable>
-        {value}
-      </AppText>
+      <View style={styles.accountValueRow}>
+        <AppText variant="body" weight="semiBold" color={colors.textPrimary} selectable>
+          {value}
+        </AppText>
+        <Pressable onPress={copy} hitSlop={8} style={styles.copyBtn}>
+          <Ionicons name="copy-outline" size={14} color={colors.primary} />
+          <AppText variant="micro" color={colors.primary} weight="semiBold">
+            Copy
+          </AppText>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -476,6 +494,22 @@ const styles = StyleSheet.create({
     gap: spacing.xxs,
   },
   accountRow: { gap: 2, marginTop: spacing.xxs },
+  accountValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flexWrap: 'wrap',
+  },
+  copyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(14,148,136,0.35)',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
   copyHint: { marginTop: spacing.xxs },
   instructions: { marginTop: spacing.xxs },
   note: {
