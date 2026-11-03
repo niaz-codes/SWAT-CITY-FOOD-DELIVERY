@@ -143,30 +143,48 @@ async function main(): Promise<void> {
     check('delivery address reused', true);
   }
 
-  // ---- 5. place the demo order ---------------------------------------------
+  // ---- 5. place the order (manual transfer — the only checkout methods) -----
   const idempotencyKey = `e2e-demo-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const placed = await call('/orders', {
     method: 'POST',
     token,
     body: {
       addressId,
-      paymentMethod: 'demo',
+      paymentMethod: 'ubl',
       note: 'E2E demo checkout test',
-      customerPhone: '03009999003',
       idempotencyKey,
     },
   });
   const order = unwrap(placed.body).order as Record<string, unknown> | undefined;
   const payment = unwrap(placed.body).payment as Record<string, unknown> | undefined;
-  const demoMode = unwrap(placed.body).demoMode as Record<string, unknown> | undefined;
   const orderId = text(order?._id ?? order?.id);
   let transactionRef = text(payment?.transactionRef);
-  check('demo order created', placed.status === 201 || placed.status === 200, `status=${placed.status}`);
-  check('payment method is demo', text(payment?.method) === 'demo');
-  check('create-order response labels DEMO — NOT REAL MONEY', text(demoMode?.label) === 'DEMO — NOT REAL MONEY');
+  check('transfer order created', placed.status === 201 || placed.status === 200, `status=${placed.status}`);
+  check('order payment method is ubl', text(order?.paymentMethod ?? payment?.method) === 'ubl');
+  check(
+    'create-order response carries no demo labelling',
+    unwrap(placed.body).demoMode == null,
+  );
   if (failed > 0 && !orderId) {
     throw new Error(`Order placement failed: ${text(placed.body.message)} — aborting`);
   }
+
+  // ---- 5b. open the demo payment on that order and fetch its intent ---------
+  // The order itself was created as a manual-transfer order; the demo gateway
+  // exercise runs against the payment created BY THIS call, the way the
+  // gateway endpoints still allow for a settled-in-app use case.
+  const opened = await call(`/payments/orders/${orderId}/payment`, {
+    method: 'POST',
+    token,
+    body: { paymentMethod: 'demo' },
+  });
+  const openedData = unwrap(opened.body);
+  transactionRef = text((openedData.payment as Record<string, unknown> | undefined)?.transactionRef) || transactionRef;
+  check(
+    'demo payment intent opened on the order',
+    opened.status === 200 || opened.status === 201,
+    `status=${opened.status} msg=${opened.status >= 400 ? text(openedData.message ?? opened.body.message).slice(0, 120) : ''}`,
+  );
 
   // ---- 6. verify → paid ------------------------------------------------------
   const verify = await call(`/payments/orders/${orderId}/payment/verify`, { method: 'POST', token, body: {} });
@@ -204,7 +222,7 @@ async function main(): Promise<void> {
   const dupOrder = await call('/orders', {
     method: 'POST',
     token,
-    body: { addressId, paymentMethod: 'demo', note: '', idempotencyKey },
+    body: { addressId, paymentMethod: 'ubl', note: '', idempotencyKey },
   });
   const replayId = text(unwrap(dupOrder.body).order?._id ?? unwrap(dupOrder.body).order?.id);
   check(

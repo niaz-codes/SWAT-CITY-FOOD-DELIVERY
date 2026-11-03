@@ -4,6 +4,7 @@ import {
   FoodItemModel,
   OrderModel,
   RestaurantModel,
+  ReviewModel,
   UserModel,
   type Order,
   type Restaurant,
@@ -381,4 +382,60 @@ export const cancelMyOrder = asyncHandler(async (req: AuthRequest, res: Response
     reason: req.body.reason as string,
   });
   sendSuccess(res, { order: cancelled });
+});
+
+// ---------------------------------------------------------------------------
+// Reviews (read + public replies)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reviews that mention this restaurant (restaurant reviews and food reviews
+ * both stamp `restaurant`). Newest first, with the customer's name attached so
+ * the portal can greet the reviewer; `reply` is shown once the owner responds.
+ */
+export const listMyReviews = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const restaurant = await ownedRestaurant(req.user._id);
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+
+  const [reviews, total] = await Promise.all([
+    ReviewModel.find({ restaurant: restaurant._id })
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate('user', 'name')
+      .lean(),
+    ReviewModel.countDocuments({ restaurant: restaurant._id }),
+  ]);
+
+  sendSuccess(res, { reviews }, paginationMeta(page, limit, total));
+});
+
+/**
+ * The public face of the portal: one reply per review, always attributed to
+ * the restaurant account. Replying again edits the published reply (kept
+ * explicit rather than hidden behind a separate "edit" endpoint).
+ */
+export const replyToMyReview = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const restaurant = await ownedRestaurant(req.user._id);
+  const reply = String((req.body as { reply?: string }).reply ?? '').trim();
+
+  const review = await ReviewModel.findOneAndUpdate(
+    {
+      _id: req.params.id,
+      restaurant: restaurant._id,
+    },
+    {
+      $set: {
+        reply,
+        repliedAt: new Date(),
+        repliedBy: req.user._id,
+      },
+    },
+    { new: true },
+  );
+  if (!review) throw NOT_FOUND('Review for your restaurant');
+  sendSuccess(res, { review });
 });

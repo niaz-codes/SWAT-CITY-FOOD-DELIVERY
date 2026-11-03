@@ -27,6 +27,7 @@ export const NOTIFICATION_EVENTS = [
   'ride_cancelled',
   'payment_settled',
   'announcement',
+  'chat_message',
 ] as const;
 export type NotificationEvent = (typeof NOTIFICATION_EVENTS)[number];
 

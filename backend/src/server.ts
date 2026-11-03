@@ -8,6 +8,9 @@ import { initSocket } from './sockets';
 import { ensureAdmin } from './services/seed.service';
 import { ensureDefaultSettings } from './services/settings.service';
 import { startPaymentExpirySweeper } from './services/paymentSweeper';
+import { startPaymentReminderSweeper } from './services/paymentReminder';
+import { startDispatchSweeper } from './services/dispatch.service';
+import { describeFcmStatus } from './config/fcm';
 
 async function start(): Promise<void> {
   await connectDB();
@@ -33,12 +36,20 @@ async function start(): Promise<void> {
 
   // Abandoned wallet payments would otherwise leave unpaid orders sitting in the
   // restaurant and rider queues indefinitely.
-  const stopSweeper = startPaymentExpirySweeper();
+  const stopPaymentSweeper = startPaymentExpirySweeper();
+  // Manual-transfer submissions older than PAYMENT_REMINDER_HOURS get exactly
+  // one reminder push; without it a stuck verification reads as a lost order.
+  const stopReminderSweeper = startPaymentReminderSweeper();
+  // Unclaimed ready orders retry their rider offer rounds here; without the
+  // sweeper an expired offer round would strand the order in the pool forever.
+  const stopDispatch = startDispatchSweeper();
 
   const shutdown = async (signal: string) => {
     // eslint-disable-next-line no-console
     console.log(`\n[server] ${signal} received — shutting down gracefully...`);
-    stopSweeper();
+    stopPaymentSweeper();
+    stopReminderSweeper();
+    stopDispatch();
     server.close(async () => {
       await disconnectDB();
       process.exit(0);
@@ -62,6 +73,7 @@ async function start(): Promise<void> {
 /** One-line status per integration. Logs configuration state only, no secrets. */
 async function reportIntegrations(): Promise<void> {
   const expoPush = describeExpoPushStatus();
+  const fcmPush = describeFcmStatus();
   const supabaseOk = await pingSupabase();
 
   const lines = [
@@ -71,6 +83,7 @@ async function reportIntegrations(): Promise<void> {
     `[integrations] email otp : supabase auth (check SMTP settings in the dashboard)`,
     `[integrations] smtp      : ${smtpConfigured ? 'configured (password-changed notices)' : 'not configured (optional)'}`,
     `[integrations] expopush  : ${expoPush.enabled ? 'enabled' : 'DISABLED'}`,
+    `[integrations] fcmpush   : ${fcmPush.serviceAccountConfigured ? (fcmPush.enabled ? 'enabled' : 'DISABLED by FCM_ENABLED') : 'not configured (Expo Push only)'}`,
   ];
   // eslint-disable-next-line no-console
   console.log(lines.join('\n'));

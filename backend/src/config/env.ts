@@ -87,6 +87,28 @@ const envSchema = z.object({
    */
   EXPO_ACCESS_TOKEN: z.string().optional(),
 
+  // --- Firebase Cloud Messaging v1 (direct FCM, service-account) --------------
+  /**
+   * Direct FCM v1 delivery for devices that register a real FCM token (Android
+   * APK/release builds with this Firebase project). The service account JSON
+   * from Firebase Console → Project Settings → Service accounts; paste the raw
+   * JSON document or its Base64 encoding. Leave blank to keep Expo Push as the
+   * only remote transport (the app's mixed token list stays valid either way).
+   */
+  FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional(),
+  /** Optional explicit project id; normally derived from the service account. */
+  FIREBASE_PROJECT_ID: z.string().optional(),
+  /** Master switch for the direct-FCM transport (Expo Push is unaffected). */
+  FCM_ENABLED: z.enum(['true', 'false']).default('true'),
+
+  // --- Manual payment reminders ------------------------------------------------
+  /**
+   * A manual-transfer order waiting for admin verification older than this
+   * many hours gets ONE reminder push to its customer (re-reminded at most
+   * again from the next reminder threshold, never per sweep).
+   */
+  PAYMENT_REMINDER_HOURS: z.coerce.number().int().positive().default(2),
+
   // --- Easypaisa (official Easypay REST v4 integration) ---------------------
   /**
    * Field names below follow the official Easypay Merchant Integration Guide.
@@ -124,6 +146,48 @@ const envSchema = z.object({
   /** How long a pending online payment stays open before it can be abandoned. */
   PAYMENT_EXPIRY_MINUTES: z.coerce.number().int().positive().default(30),
 
+  // --- DIRECT / MANUAL transfer payments (admin-verified, no gateway API) ---
+  /**
+   * The "Direct Bank Transfer (UBL)" + manual Easypaisa/JazzCash options ask the
+   * customer to move money THEMSELVES into the company accounts below, then
+   * submit the transaction reference and a receipt screenshot. NOTHING is
+   * settled automatically: an authorised admin compares every submission with
+   * the real UBL bank statement before the payment is marked verified. There is
+   * NO bank API behind this — a config change here only changes what the
+   * customer is asked to do, never the verification result.
+   *
+   * These numbers are receiving-account details, not API credentials — no
+   * secret that could move money lives in this section. The values are handed
+   * to the customer only for an order they own (order-scoped endpoint); they
+   * are never bundled into a public client asset.
+   */
+  MANUAL_PAYMENTS_ENABLED: z.enum(['true', 'false']).default('true'),
+  /** Label the customer sees, e.g. 'UBL — United Bank Limited'. */
+  MANUAL_PAYMENT_BANK_NAME: z.string().min(3).default('UBL – United Bank Limited'),
+  /** UBL receiving account title printed on the transfer receipt. */
+  UBL_ACCOUNT_TITLE: z.string().min(3).default('Swat City Food Delivery'),
+  /** UBL account number the customer transfers INTO. */
+  UBL_ACCOUNT_NUMBER: z.string().min(4).default('0405289118711'),
+  /** Optional UBL IBAN (-- tell the customer which format to use). */
+  UBL_IBAN: z.string().optional(),
+  /** Optional bank branch hint shown under the account number. */
+  UBL_BRANCH: z.string().optional(),
+  /** Company Easypaisa mobile account the customer can transfer to instead. */
+  EASYPAISA_TRANSFER_NUMBER: z.string().min(10).default('03450050667'),
+  EASYPAISA_TRANSFER_TITLE: z.string().min(3).default('Swat City Food Delivery'),
+  /** Company JazzCash mobile account (manual transfer, NOT the gateway). */
+  JAZZCASH_TRANSFER_NUMBER: z.string().min(10).default('03265521032'),
+  JAZZCASH_TRANSFER_TITLE: z.string().min(3).default('Swat City Food Delivery'),
+  /**
+   * PRIVATE Storage bucket for payment receipt screenshots. Backed by the
+   * service role only — every read is arbitrated by the backend through a
+   * short-lived signed URL, and a customer can only reach the receipts of
+   * their own orders through the API.
+   */
+  MANUAL_PAYMENT_RECEIPT_BUCKET: z.string().default('payment-receipts'),
+  /** How long the admin/customer receipt preview link stays valid, minutes. */
+  MANUAL_PAYMENT_RECEIPT_URL_MINUTES: z.coerce.number().int().positive().default(30),
+
   // --- Demo payments (TESTING ONLY — never real money) ----------------------
   /**
    * Master switch for the simulated "Demo Pay" checkout method. When "true",
@@ -134,6 +198,31 @@ const envSchema = z.object({
    * move. Must stay "false" in production once real gateways are wired up.
    */
   DEMO_PAYMENTS_ENABLED: z.enum(['true', 'false']).default('false'),
+
+  // --- Automatic rider dispatch (payment-approved, ready orders) -------------
+  /**
+   * When an order becomes `ready` (and only ever after its payment has been
+   * verified — see dispatch.service.ts), the backend offers it to every
+   * available online rider at once. These knobs shape that auction:
+   *
+   *   DISPATCH_OFFER_TTL_SECONDS  how long one offer round stays live in the
+   *                               rider app (the Accept countdown). A rider who
+   *                               rejects sees the job again on the NEXT round.
+   *                               The first rider who Accepts inside the
+   *                               window claims the order atomically
+   *                               (accept_rider_order SQL function).
+   *   DISPATCH_RETRY_SECONDS      how long to wait before a NEW offer round is
+   *                               broadcast (retry after silence / rejects).
+   *   DISPATCH_SWEEP_SECONDS      how often the background sweeper scans the
+   *                               pool of ready orders.
+   *   DISPATCH_ADMIN_ALERT_MINUTES  when NO rider is online, the admin team is
+   *                               re-alerted at most once per this interval so
+   *                               an unstaffed shift is visible but never spams.
+   */
+  DISPATCH_OFFER_TTL_SECONDS: z.coerce.number().int().positive().default(40),
+  DISPATCH_RETRY_SECONDS: z.coerce.number().int().positive().default(45),
+  DISPATCH_SWEEP_SECONDS: z.coerce.number().int().positive().default(15),
+  DISPATCH_ADMIN_ALERT_MINUTES: z.coerce.number().int().positive().default(3),
 
   // --- Google Sign-In (customer accounts only) -------------------------------
   /**
@@ -247,6 +336,14 @@ export const jazzcashConfigured = Boolean(
  * Deliberately server-side only: the client cannot enable demo mode.
  */
 export const demoPaymentsEnabled = env.DEMO_PAYMENTS_ENABLED === 'true';
+
+/**
+ * Direct/manual transfer methods ("Direct Bank Transfer (UBL)" and the manual
+ * Easypaisa/JazzCash transfer options) are ON by default; deployments can hide
+ * them with MANUAL_PAYMENTS_ENABLED=false. Server-side only, exactly like the
+ * demo switch: the client cannot enable something the backend did not decide.
+ */
+export const manualPaymentsEnabled = env.MANUAL_PAYMENTS_ENABLED === 'true';
 
 /**
  * Every client ID whose ID tokens this backend will accept. Verification is a

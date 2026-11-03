@@ -99,6 +99,8 @@ export const restaurantProfileUpdateSchema = z.object({
   addressLine: z.string().trim().max(200).optional(),
   area: z.string().trim().max(60).optional(),
   deliveryTimeMin: z.number().int().min(1).max(300).optional(),
+  /** Kitchen prep window override (minutes) shown to customers as cook time. */
+  prepTimeMin: z.number().int().min(1).max(240).optional(),
   deliveryFee: z.number().min(0).optional(),
   minOrder: z.number().min(0).optional(),
   freeDelivery: z.boolean().optional(),
@@ -130,4 +132,13 @@ export const restaurantAdvanceOrderSchema = z.object({
 
 export const restaurantCancelOrderSchema = z.object({
   reason: z.string().trim().min(3, 'A reason is required to cancel').max(200),
+});
+
+/** A restaurant reply to a customer review (one per review; portal feature). */
+export const restaurantReviewReplySchema = z.object({
+  reply: z
+    .string()
+    .trim()
+    .min(1, 'Reply cannot be empty')
+    .max(500, 'Reply is limited to 500 characters'),
 });

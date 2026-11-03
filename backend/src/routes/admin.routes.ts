@@ -7,9 +7,13 @@ import {
   adminListOrders,
   adminListPayments,
   adminListRides,
+  adminListTransferPayments,
   adminListWalletTransactions,
   adminListWallets,
   adminOrderDetail,
+  adminTransferPaymentDecision,
+  adminTransferPaymentDetail,
+  adminTransferReceiptUrl,
   adminWalletDetail,
   adminListWithdrawals,
   adminWithdrawalDetail,
@@ -50,6 +54,7 @@ import {
   adminListNotifications,
   adminSendNotification,
 } from '../controllers/admin.notification.controller';
+import { platformAnalytics } from '../controllers/admin.analytics.controller';
 import {
   activateRider,
   adminUpdateVehiclePlate,
@@ -90,6 +95,7 @@ import {
 } from '../validations/admin';
 import { ORDER_STATUSES } from '../models';
 import { adminSendNotificationSchema } from '../validations/notification';
+import { manualPaymentReviewSchema } from '../validations/payment';
 import { z } from 'zod';
 
 const router = Router();
@@ -101,6 +107,8 @@ router.use(requireAuth, requireAdmin);
 // ---------------------------------------------------------------------------
 router.get('/dashboard', dashboard);
 router.get('/reports', reports);
+// Platform analytics for the Metrics charts (summary/series/top entities).
+router.get('/analytics', platformAnalytics);
 
 // ---------------------------------------------------------------------------
 // Users & riders
@@ -210,6 +218,15 @@ router.post(
 // ---------------------------------------------------------------------------
 // Payments & wallets
 // ---------------------------------------------------------------------------
+router.get('/payments/verification', adminListTransferPayments);
+router.get('/payments/verification/:id', validate(idParamSchema, 'params'), adminTransferPaymentDetail);
+router.post(
+  '/payments/verification/:id/decision',
+  validate(idParamSchema, 'params'),
+  validate(manualPaymentReviewSchema),
+  adminTransferPaymentDecision,
+);
+router.get('/payments/verification/:id/receipt', validate(idParamSchema, 'params'), adminTransferReceiptUrl);
 router.get('/payments', adminListPayments);
 router.get('/wallets', adminListWallets);
 router.get('/wallets/:id', validate(idParamSchema, 'params'), adminWalletDetail);

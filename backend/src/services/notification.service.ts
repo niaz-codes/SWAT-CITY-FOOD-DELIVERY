@@ -6,10 +6,10 @@
 //   2. emits it live over Socket.IO (foreground, app open)
 //   3. pushes it remotely (background + terminated states)
 //
-// Remote delivery is routed per token: only Expo Push tokens (what the app
-// registers) can be delivered, because the backend talks to the Expo Push
-// Service and no other provider. Tokens the transport reports as permanently
-// invalid are pruned so the array does not grow forever.
+// Remote delivery is routed per token: Expo Push tokens go over the Expo Push
+// Service, real FCM tokens (Android APK builds) go over Firebase Cloud Messaging
+// v1. Tokens a transport reports as permanently invalid are pruned so the array
+// does not grow forever.
 // ============================================================
 
 import {
@@ -26,6 +26,10 @@ import {
   isExpoPushToken,
   sendExpoMulticastNotification,
 } from '../config/expoPush';
+import {
+  fcmConfigured,
+  sendFcmMulticastNotification,
+} from '../config/fcm';
 import { emitToUser, isSocketReady } from '../sockets';
 import { AppError } from '../utils/AppError';
 
@@ -79,9 +83,14 @@ export async function notifyUser(userId: string, input: NotificationInput): Prom
   return notification;
 }
 
+/** A non-Expo, non-empty token is treated as a direct-FCM registration token. */
+function isFcmToken(token: string): boolean {
+  return !isExpoPushToken(token) && token.trim().length > 0;
+}
+
 /**
- * Push to a token list and delete the ones the transport reports as permanently
- * invalid. Never rejects - callers fire-and-forget it.
+ * Push to a token list and delete the ones each transport reports as
+ * permanently invalid. Never rejects - callers fire-and-forget it.
  */
 async function pushToTokens(
   userId: string,
@@ -96,26 +105,58 @@ async function pushToTokens(
   },
 ): Promise<void> {
   try {
-    // Only Expo tokens are deliverable. Silently posting an FCM token to the
-    // Expo API produced a rejected ticket and, worse, looked like a successful
-    // send in the logs, so drop non-Expo tokens explicitly.
+    // Route by token shape: Expo transport for Expo tokens, direct FCM v1 for
+    // everything else. A device can hold both (Expo Go + a release APK), so
+    // neither send waits on the other.
     const expoTokens = [...new Set(tokens.filter(isExpoPushToken))];
-    if (expoTokens.length === 0) {
-      if (tokens.length > 0) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[push] ${tokens.length} device token(s) for user ${userId} are not Expo push tokens; skipping`,
-        );
-      }
-      return;
+    const fcmTokens = fcmConfigured()
+      ? [...new Set(tokens.filter(isFcmToken))]
+      : [];
+
+    const transports: Promise<string[] | null>[] = [];
+    if (expoTokens.length > 0) {
+      // Always use the multicast path: it returns per-ticket errors, so a dead
+      // token is pruned even when the user only has one device. The single
+      // send helper cannot report DeviceNotRegistered.
+      transports.push(
+        sendExpoMulticastNotification(expoTokens, payload).then((r) => r.invalidTokens),
+      );
+    }
+    if (fcmTokens.length > 0) {
+      // FCM `data` must be a flat string map: the mobile app's tap-routing
+      // (`toPayload` in src/services/notifications.ts) reads exactly these
+      // keys — event/kind/refId/notificationId — so an FCM tap deep-links
+      // identically to an Expo Push tap.
+      transports.push(
+        sendFcmMulticastNotification(fcmTokens, {
+          title: payload.title,
+          body: payload.body,
+          data: {
+            event: payload.event,
+            kind: payload.kind,
+            refId: payload.refId,
+            notificationId: payload.notificationId,
+            title: payload.title,
+            body: payload.body,
+          },
+        }).then((r) => r.invalidTokens),
+      );
     }
 
-    // Always use the multicast path: it returns per-ticket errors, so a dead
-    // token is pruned even when the user only has one device. The single-send
-    // helper cannot report DeviceNotRegistered.
-    const result = await sendExpoMulticastNotification(expoTokens, payload);
-    if (result.invalidTokens.length > 0) {
-      await removeDeviceTokens(userId, result.invalidTokens);
+    const settled = await Promise.all(transports);
+    const invalid = [...new Set(settled.flat().filter((t): t is string => Boolean(t)))];
+    if (invalid.length > 0) {
+      await removeDeviceTokens(userId, invalid);
+    }
+
+    const untouched = tokens.length - expoTokens.length - fcmTokens.length;
+    if (untouched > 0 && !fcmConfigured()) {
+      // A non-Firebase deployment has no transport for raw FCM tokens; say so
+      // instead of looking like a successful send.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[push] ${untouched} device token(s) for user ${userId} need the FCM transport (not configured); skipping`,
+      );
     }
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -278,7 +319,7 @@ export async function broadcastNotification(input: BroadcastInput): Promise<Broa
   return { audience: input.audience, recipients: users.length, pushed: tokens.length };
 }
 
-/** Batched multicast + per-owner pruning of tokens Expo reports as dead. */
+/** Batched multicast + per-owner pruning of tokens the transports report dead. */
 async function pushBroadcast(
   tokens: string[],
   tokenOwners: Map<string, Set<string>>,
@@ -293,8 +334,10 @@ async function pushBroadcast(
     body: input.body,
   };
 
-  for (let i = 0; i < tokens.length; i += 100) {
-    const batch = tokens.slice(i, i + 100);
+  const expoTokens = tokens.filter(isExpoPushToken);
+
+  for (let i = 0; i < expoTokens.length; i += 100) {
+    const batch = expoTokens.slice(i, i + 100);
     try {
       const result = await sendExpoMulticastNotification(batch, payload);
       for (const token of result.invalidTokens ?? []) {
@@ -305,6 +348,35 @@ async function pushBroadcast(
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn('[push] broadcast batch failed:', (error as Error).message);
+    }
+  }
+
+  // Direct-FCM devices (release APK builds) in the same broadcast.
+  if (fcmConfigured()) {
+    const broadcastData = {
+      audience: input.audience,
+      broadcast: 'true',
+      title: input.title,
+      body: input.body,
+    };
+    const fcmTokens = tokens.filter(isFcmToken);
+    for (let i = 0; i < fcmTokens.length; i += 100) {
+      const batch = fcmTokens.slice(i, i + 100);
+      try {
+        const result = await sendFcmMulticastNotification(batch, {
+          title: input.title,
+          body: input.body,
+          data: broadcastData,
+        });
+        for (const token of result.invalidTokens ?? []) {
+          const owners = tokenOwners.get(token);
+          if (!owners) continue;
+          for (const userId of owners) await removeDeviceToken(userId, token);
+        }
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.warn('[fcm] broadcast batch failed:', (error as Error).message);
+      }
     }
   }
 }

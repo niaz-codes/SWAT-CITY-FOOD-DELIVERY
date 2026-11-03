@@ -35,7 +35,8 @@ import type * as NotificationsNS from 'expo-notifications';
  *      release builds - loads the module normally.
  *
  * Tokens are Expo Push Service tokens, delivered by the backend over the Expo
- * Push API (the backend talks to no push provider directly).
+ * Push API; on Android release/dev-client builds a native FCM token is ALSO
+ * registered (direct Firebase v1 delivery server-side, when configured).
  *
  * Navigation from a tap is deliberately NOT handled here. `RootNavigator` passes
  * its own handler so routing stays next to the routes it targets.
@@ -315,29 +316,96 @@ async function getStoredToken(): Promise<string | null> {
   }
 }
 
+/** Storage key for the cached native FCM token (separate from the Expo one). */
+const FCM_TOKEN_KEY = '@swat/fcm-device-token';
+
 /**
- * Ensures the backend has this device's token.
+ * The native FCM registration token for this install, for Android RELEASE and
+ * development-client builds (never Expo Go, where the module above is not even
+ * loaded). The backend routes such tokens over Firebase Cloud Messaging v1 —
+ * see backend/src/config/fcm.ts.
  *
- * Registers only when the token differs from the cached one, so an app launch
- * costs no extra request. Failures are swallowed: a missing push token must
- * never block the login flow, and the next foreground/launch retries.
+ * The token only matches a Firebase project if the app was built with that
+ * project's `google-services.json`; on other builds the call throws or returns
+ * a token from no project — both are treated as "no FCM channel here", and the
+ * Expo Push token keeps carrying delivery.
+ *
+ * iOS is deliberately skipped: it returns an APNs token, which the backend has
+ * no transport for.
  */
-export async function ensurePushTokenRegistered(
+async function getFcmDeviceToken(): Promise<string | null> {
+  if (Platform.OS !== 'android') return null;
+  const N = notifications();
+  if (!N || typeof N.getDevicePushTokenAsync !== 'function') return null;
+  try {
+    const result = (await N.getDevicePushTokenAsync()) as {
+      type?: string;
+      data?: string | { token?: string };
+    };
+    const raw = result.data;
+    const token = typeof raw === 'string' ? raw : raw?.token;
+    return token && token.trim() ? token.trim() : null;
+  } catch {
+    // No Firebase project baked into this build / Play services unavailable.
+    return null;
+  }
+}
+
+/** One token registration helper shared by both transports. */
+async function registerOnce(
   register: (token: string) => Promise<void>,
+  token: string,
+  cacheKey: string,
 ): Promise<boolean> {
-  const token = await getPushToken();
-  if (!token) return false;
-
-  const previous = await getStoredToken();
-  if (previous === token) return true;
-
   try {
     await register(token);
-    await AsyncStorage.setItem(TOKEN_KEY, token).catch(() => {});
+    await AsyncStorage.setItem(cacheKey, token).catch(() => {});
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Ensures the backend has this device's push tokens.
+ *
+ * Two transports, both optional and independent:
+ *   - the Expo Push token (primary; every runtime that can hold one), and
+ *   - the native FCM token (Android release/dev-client builds with the
+ *     Firebase project configured) routed over Firebase v1 server-side.
+ *
+ * Each registers only when its token differs from the cached one, so an app
+ * launch costs no extra request. Failures are swallowed: a missing push token
+ * must never block the login flow, and the next foreground/launch retries.
+ */
+export async function ensurePushTokenRegistered(
+  register: (token: string) => Promise<void>,
+): Promise<boolean> {
+  let ok = false;
+
+  const expoToken = await getPushToken();
+  if (expoToken) {
+    const previous = await getStoredToken();
+    if (previous === expoToken) {
+      ok = true;
+    } else {
+      ok = await registerOnce(register, expoToken, TOKEN_KEY);
+    }
+  }
+
+  // Direct-FCM channel. `deviceTokens` on the backend accepts both token
+  // shapes in one array; delivery routes per token there.
+  const fcmToken = await getFcmDeviceToken();
+  if (fcmToken) {
+    const previousFcm = await AsyncStorage.getItem(FCM_TOKEN_KEY).catch(() => null);
+    if (previousFcm === fcmToken) {
+      ok = true;
+    } else {
+      ok = (await registerOnce(register, fcmToken, FCM_TOKEN_KEY)) || ok;
+    }
+  }
+
+  return ok;
 }
 
 /**

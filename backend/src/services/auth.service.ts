@@ -12,6 +12,7 @@ import { AppError, CONFLICT, FORBIDDEN, UNAUTHORIZED } from '../utils/AppError';
 import { normalizePhone } from '../utils/helpers';
 import { verifyPassword } from '../utils/helpers';
 import { getOrCreateWallet } from './wallet.service';
+import { ensureReferralCode, resolveReferral } from './referral.service';
 import { notifyUser } from './notification.service';
 import {
   issueEmailOtp,
@@ -116,6 +117,8 @@ export async function registerUser(input: {
   vehicleBrand?: string;
   vehiclePlate?: string;
   cnic?: string;
+  /** A friend's referral code typed at signup (customers only). */
+  referralCode?: string;
 }): Promise<OtpChallengeResponse> {
   const email = input.email?.trim().toLowerCase();
   if (!email) throw new AppError('An email address is required', 422);
@@ -132,6 +135,11 @@ export async function registerUser(input: {
     );
   }
 
+  // Unknown/invalid codes are ignored so a typo can never fail a signup — but a
+  // valid code still logs a relationship for the reward payout later.
+  const referredBy =
+    input.role === 'customer' ? await resolveReferral(input.referralCode) : null;
+
   const password = await hashPassword(input.password);
   const user = await UserModel.create({
     name: input.name,
@@ -142,9 +150,13 @@ export async function registerUser(input: {
     verified: false,
     isApproved: input.role === 'customer',
     pendingApproval: input.role === 'rider',
+    referredBy,
   });
 
+  // A failed code mint must never fail the signup: eligible users get a code
+  // on the first future visit to the referral screen instead.
   if (input.role === 'customer') {
+    await ensureReferralCode(String(user._id)).catch(() => undefined);
     await CustomerProfileModel.create({ user: user._id, name: input.name });
   } else if (input.role === 'rider') {
     await RiderProfileModel.create({
@@ -602,6 +614,7 @@ export async function loginOrRegisterGoogleCustomer(identity: {
     name: user.name ?? undefined,
     avatarUrl: identity.picture ?? undefined,
   });
+  await ensureReferralCode(String(user._id)).catch(() => undefined);
   await getOrCreateWallet(String(user._id), false);
   await notifyUser(String(user._id), {
     type: 'system',

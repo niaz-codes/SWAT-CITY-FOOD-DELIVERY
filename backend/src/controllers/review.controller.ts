@@ -61,7 +61,28 @@ export const createReview = asyncHandler(async (req: AuthRequest, res: Response)
   // Verify real purchase for order-backed reviews
   let verified = false;
   const isOrderBacked = targetType === 'food' || targetType === 'restaurant';
-  if (req.body.orderId || isOrderBacked || targetType === 'ride') {
+
+  if (targetType === 'rider') {
+    // A rider review is scoped to ONE delivered order: the caller must be the
+    // customer of that order, the order must be `delivered`, and the target id
+    // must be the rider who was actually assigned — otherwise any user could
+    // rate any rider arbitrary things. targetId is the rider's user id.
+    if (!orderId) throw new AppError('An orderId is required to rate a rider', 422);
+    const delivery = await OrderModel.findById(orderId)
+      .select('customer rider status')
+      .lean();
+    if (!delivery) throw NOT_FOUND('Order');
+    if (
+      String(delivery.customer) !== String(req.user._id) ||
+      String(delivery.status) !== 'delivered'
+    ) {
+      throw new AppError('You can only rate the rider of your own delivered order', 403);
+    }
+    if (String(delivery.rider ?? '') !== String(targetId)) {
+      throw new AppError('That rider was not assigned to this order', 422);
+    }
+    verified = true;
+  } else if (req.body.orderId || isOrderBacked || targetType === 'ride') {
     if (targetType === 'ride') {
       const completedRide = await RideModel.exists({
         _id: targetId,
@@ -88,6 +109,9 @@ export const createReview = asyncHandler(async (req: AuthRequest, res: Response)
     user: req.user._id,
     targetType,
     targetId,
+    // Order-linked reviews keep the domain refs denormalised so any list can
+    // render "for order X" / "for rider Y" without re-deriving from targetId.
+    rider: targetType === 'rider' ? targetId : undefined,
     rating,
     title,
     comment,

@@ -8,7 +8,9 @@ import {
   getMyOrderDetail,
   getMyRestaurant,
   listMyOrders,
+  listMyReviews,
   myReports,
+  replyToMyReview,
   updateMyMenuItem,
   updateMyRestaurant,
   uploadMyImage,
@@ -23,6 +25,7 @@ import {
   restaurantAdvanceOrderSchema,
   restaurantMenuItemCreateSchema,
   restaurantProfileUpdateSchema,
+  restaurantReviewReplySchema,
 } from '../validations/restaurant';
 import { updateFoodItemSchema } from '../validations/restaurant';
 
@@ -58,8 +61,7 @@ router.post(
 // Orders
 router.get('/reports', myReports);
 router.get('/orders', listMyOrders);
-router.get('/orders/:id', validate(idParamSchema, 'params'), getMyOrderDetail);
-router.post(
+router.get('/orders/:id', validate(idParamSchema, 'params'), getMyOrderDetail);router.post(
   '/orders/:id/advance',
   validate(idParamSchema, 'params'),
   validate(restaurantAdvanceOrderSchema),
@@ -70,6 +72,15 @@ router.post(
   validate(idParamSchema, 'params'),
   validate(restaurantCancelOrderSchema),
   cancelMyOrder,
+);
+
+// Reviews (read + public replies)
+router.get('/reviews', listMyReviews);
+router.post(
+  '/reviews/:id/reply',
+  validate(idParamSchema, 'params'),
+  validate(restaurantReviewReplySchema),
+  replyToMyReview,
 );
 
 export default router;

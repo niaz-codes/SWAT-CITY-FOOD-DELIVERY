@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom'
 import { CreditCard, ExternalLink } from 'lucide-react'
 import { useListResource } from '../lib/useListResource'
-import { formatCurrency, formatDateTime, humanizeStatus, statusTone, timeAgo } from '../lib/format'
+import { humanizeStatus, statusTone, timeAgo, formatCurrency, formatDateTime } from '../lib/format'
+import type { BadgeTone } from '../components/ui/Badge'
 import PageHeader from '../components/ui/PageHeader'
 import Button from '../components/ui/Button'
 import Badge from '../components/ui/Badge'
@@ -25,8 +26,60 @@ interface PaymentRow {
   order?: { _id?: string; orderNumber?: string; total?: number; paymentStatus?: string } | null
 }
 
-const STATUSES = ['paid', 'pending', 'failed', 'refunded', 'cancelled']
-const METHODS = ['cash', 'wallet', 'easypaisa', 'jazzcash', 'card', 'demo']
+const STATUSES = [
+  'paid',
+  'pending',
+  'failed',
+  'refunded',
+  'cancelled',
+  'pending_verification',
+  'rejected',
+]
+const METHODS = [
+  'cash',
+  'wallet',
+  'easypaisa',
+  'jazzcash',
+  'card',
+  'demo',
+  'ubl',
+  'easypaisa_transfer',
+  'jazzcash_transfer',
+]
+
+/** Friendlier names for the Direct Bank Transfer methods. */
+const METHOD_LABELS: Record<string, string> = {
+  ubl: 'Direct Bank Transfer (UBL)',
+  easypaisa_transfer: 'Easypaisa – Direct Transfer',
+  jazzcash_transfer: 'JazzCash – Direct Transfer',
+}
+
+function methodLabel(method?: string | null): string {
+  const value = (method ?? '').toLowerCase()
+  return METHOD_LABELS[value] ?? humanizeStatus(method ?? '-')
+}
+
+/** Labels + tones for the manual-transfer statuses this screen adds. */
+const STATUS_LABELS: Record<string, string> = {
+  pending_verification: 'Awaiting verification',
+  rejected: 'Rejected',
+  pending: 'Pending',
+}
+
+function statusLabel(status?: string | null): string {
+  const value = (status ?? '').toLowerCase()
+  return STATUS_LABELS[value] ?? humanizeStatus(status ?? 'pending')
+}
+
+function paymentTone(status?: string | null): BadgeTone {
+  const value = (status ?? '').toLowerCase()
+  if (value === 'pending_verification') return 'warning'
+  if (value === 'rejected' || value === 'failed') return 'danger'
+  if (value === 'paid') return 'success'
+  // Manual transfers still "pending" read better as neutral than amber.
+  if (value === 'pending' || value === 'processing') return 'neutral'
+  return statusTone(status)
+}
 
 /** Amber pill for simulated money — never styled like a real charge. */
 function DemoBadge() {
@@ -95,7 +148,7 @@ export default function Payments() {
         <span className="inline-flex flex-col items-start gap-1">
           <span className="inline-flex items-center gap-1.5">
             <CreditCard className="h-3.5 w-3.5 text-ink-subtle" aria-hidden="true" />
-            {humanizeStatus(row.method ?? '-')}
+            {methodLabel(row.method)}
           </span>
           {row.method === 'demo' && <DemoBadge />}
         </span>
@@ -132,8 +185,8 @@ export default function Payments() {
       key: 'status',
       label: 'Status',
       render: (row) => (
-        <Badge tone={statusTone(row.status)} dot>
-          {humanizeStatus(row.status ?? 'pending')}
+        <Badge tone={paymentTone(row.status)} dot>
+          {statusLabel(row.status)}
         </Badge>
       ),
     },
@@ -166,7 +219,7 @@ export default function Payments() {
               aria-label="Filter payments by status"
               options={[
                 { value: 'all', label: 'All statuses' },
-                ...STATUSES.map((value) => ({ value, label: humanizeStatus(value) })),
+                ...STATUSES.map((value) => ({ value, label: statusLabel(value) })),
               ]}
             />
           </div>
@@ -177,7 +230,7 @@ export default function Payments() {
               aria-label="Filter payments by method"
               options={[
                 { value: 'all', label: 'All methods' },
-                ...METHODS.map((value) => ({ value, label: humanizeStatus(value) })),
+                ...METHODS.map((value) => ({ value, label: methodLabel(value) })),
               ]}
             />
           </div>

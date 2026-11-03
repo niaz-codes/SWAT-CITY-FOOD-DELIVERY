@@ -70,6 +70,7 @@ export type OrderStatus =
   | 'confirmed'
   | 'preparing'
   | 'ready'
+  | 'rider_assigned'
   | 'picked_up'
   | 'on_the_way'
   | 'delivered'

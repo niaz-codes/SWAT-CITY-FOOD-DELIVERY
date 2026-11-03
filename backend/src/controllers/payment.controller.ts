@@ -5,6 +5,7 @@ import {
   PaymentModel,
   UserModel,
   isGatewayPaymentMethod,
+  isManualTransferMethod,
 } from '../models';
 import type { AuthRequest } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
@@ -15,6 +16,11 @@ import {
   initiateOnlinePayment,
   verifyOnlinePayment,
 } from '../services/payment.service';
+import {
+  getTransferInstructions,
+  receiptSignedUrl,
+  submitManualTransferProof,
+} from '../services/manualPayment.service';
 import {
   availableGateways,
   jazzcashProvider,
@@ -208,6 +214,105 @@ export const abandonOrderPayment = asyncHandler(async (req: AuthRequest, res: Re
  * marked actionable without any money ever moving. A failed payment must instead
  * be settled by a fresh verified gateway payment.
  */
+
+// ---------------------------------------------------------------------------
+// DIRECT BANK / WALLET TRANSFER (UBL + manual Easypaisa/JazzCash)
+// Customer-side: read instructions, submit proof, view own receipt. The admin
+// decisions live in admin.routes + paymentReview.service, never here.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /payments/orders/:id/transfer — transfer instructions for THIS order.
+ * Owner-checked, manual-method only. Returns the receiving account (UBL bank /
+ * company Easypaisa / company JazzCash number from server config), the exact
+ * server-computed amount, the unique order number, and the current proof state.
+ */
+export const getOrderTransferDetails = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const details = await getTransferInstructions(req.params.id, String(req.user._id));
+  sendSuccess(res, details);
+});
+
+/**
+ * POST /payments/orders/:id/transfer — submit transfer proof.
+ *
+ * Body: transactionRef + multipart file `receipt` (JPG/PNG/WEBP/PDF, ≤5MB).
+ * The submission NEVER settles the payment: it moves payment+order to
+ * `pending_verification` and puts the decision in the admin's hands. A duplicate
+ * while verification is in progress answers 409, and a transaction reference
+ * another payment already used is refused (replay protection).
+ */
+export const submitOrderTransferProof = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const order = await OrderModel.findById(req.params.id);
+  if (!order) throw NOT_FOUND('Order');
+  if (!isManualTransferMethod(order.paymentMethod)) {
+    throw new AppError('This order was not placed with a direct transfer method', 400);
+  }
+
+  const file = req.file
+    ? {
+        buffer: req.file.buffer,
+        mimetype: req.file.mimetype,
+        ext: (req.file.mimetype && req.file.mimetype.split('/')[1]) || 'bin',
+        originalname: req.file.originalname,
+      }
+    : undefined;
+
+  const { payment, order: updated } = await submitManualTransferProof(String(order._id), String(req.user._id), {
+    transactionRef: String(req.body.transactionRef ?? ''),
+    receipt: file,
+  });
+
+  sendSuccess(res, {
+    message: 'Payment submitted. Waiting for admin verification.',
+    order: {
+      id: String(updated._id),
+      orderNumber: updated.orderNumber,
+      status: updated.status,
+      paymentStatus: updated.paymentStatus,
+      paymentTransactionRef: updated.paymentTransactionRef ?? null,
+    },
+    payment: {
+      id: payment._id,
+      status: payment.status,
+      method: payment.method,
+      amount: payment.amount,
+      currency: payment.currency,
+      transactionRef: payment.transactionRef ?? null,
+      submittedAt: (payment.metadata as any)?.submittedAt ?? null,
+    },
+    // Explicit for the client UI: this state is never "paid", no matter what
+    // artefacts were uploaded. Only the admin review can change that.
+    awaitingVerification: String(updated.paymentStatus) === 'pending_verification',
+  });
+});
+
+/**
+ * GET /payments/orders/:id/transfer/receipt — the customer's own uploaded
+ * receipt, as a short-lived signed URL. Ownership is checked here; nothing is
+ * served directly from Storage.
+ */
+export const getOrderTransferReceipt = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const order = await OrderModel.findById(req.params.id);
+  if (!order) throw NOT_FOUND('Order');
+  if (String(order.customer) !== String(req.user._id)) {
+    throw new AppError('You can only view your own receipts', 403);
+  }
+
+  const payment = await PaymentModel.findOne({
+    order: order._id,
+    kind: 'order',
+    gateway: 'manual',
+  }).sort({ createdAt: -1 });
+  if (!payment) throw new AppError('No receipt has been uploaded for this order', 404);
+
+  const url = await receiptSignedUrl(payment).catch(() => null);
+  if (!url) throw new AppError('Receipt file is missing', 404);
+
+  sendSuccess(res, { url, expiresInMinutes: 30 });
+});
 
 /**
  * GET /payments/handoff/:token — public, short-lived handoff page.

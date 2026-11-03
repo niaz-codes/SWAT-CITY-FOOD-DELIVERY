@@ -14,6 +14,7 @@ import reviewRoutes from './review.routes';
 import placesRoutes from './places.routes';
 import adminRoutes from './admin.routes';
 import { isProduction } from '../config/env';
+import engagementRoutes from './engagement.routes';
 
 const router = Router();
 
@@ -29,6 +30,7 @@ router.use('/rides', rideRoutes);
 router.use('/wallet', walletRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/reviews', reviewRoutes);
+router.use('/engagement', engagementRoutes);
 router.use('/places', placesRoutes);
 router.use('/admin', adminRoutes);
 

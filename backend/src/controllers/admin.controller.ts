@@ -13,6 +13,7 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
 import { AppError, NOT_FOUND, UNAUTHORIZED } from '../utils/AppError';
 import { notifyUser } from '../services/notification.service';
+import { recordAdminAction } from '../services/adminAudit.service';
 import { uploadToCloudinary, deleteFromCloudinary } from '../services/cloudinary.service';
 import { clearRiderLocation } from '../services/riderLocation.service';
 import { paginationMeta, startOfDay } from '../utils/helpers';
@@ -212,6 +213,13 @@ export const updateUserStatus = asyncHandler(async (req: AuthRequest, res: Respo
   if (!fresh) throw NOT_FOUND('User');
   fresh.status = req.body.status;
   await fresh.save();
+  void recordAdminAction({
+    adminId: String(req.user._id),
+    action: 'user_status',
+    targetType: 'user',
+    targetId: String(fresh._id),
+    detail: `status=${fresh.status}`,
+  });
 
   await notifyUser(String(fresh._id), {
     type: 'system',
@@ -350,6 +358,12 @@ export const approveRider = asyncHandler(async (req: AuthRequest, res: Response)
   (fresh as any).reviewedBy = req.user._id;
   fresh.reviewedAt = new Date();
   await fresh.save();
+  void recordAdminAction({
+    adminId: String(req.user._id),
+    action: 'rider_approve',
+    targetType: 'rider',
+    targetId: userId,
+  });
   await UserModel.updateOne(
     { _id: userId },
     { $set: { isApproved: true, pendingApproval: false, status: 'active' } },
@@ -397,6 +411,13 @@ export const rejectRider = asyncHandler(async (req: AuthRequest, res: Response) 
       },
     },
   );
+  void recordAdminAction({
+    adminId: String(req.user._id),
+    action: 'rider_reject',
+    targetType: 'rider',
+    targetId: userId,
+    detail: reason.trim(),
+  });
   await notifyUser(userId, {
     type: 'system',
     title: 'Application rejected',
@@ -421,6 +442,12 @@ export const suspendRider = asyncHandler(async (req: AuthRequest, res: Response)
   await fresh.save();
   clearRiderLocation(userId);
   await UserModel.updateOne({ _id: userId }, { $set: { status: 'suspended', isApproved: false } });
+  void recordAdminAction({
+    adminId: String(req.user._id),
+    action: 'rider_suspend',
+    targetType: 'rider',
+    targetId: userId,
+  });
   await notifyUser(userId, {
     type: 'system',
     title: 'Account suspended',
@@ -442,6 +469,12 @@ export const activateRider = asyncHandler(async (req: AuthRequest, res: Response
   fresh.reviewedAt = new Date();
   await fresh.save();
   await UserModel.updateOne({ _id: userId }, { $set: { status: 'active', isApproved: true } });
+  void recordAdminAction({
+    adminId: String(req.user._id),
+    action: 'rider_activate',
+    targetType: 'rider',
+    targetId: userId,
+  });
   await notifyUser(userId, {
     type: 'system',
     title: 'Account reactivated',
@@ -508,6 +541,13 @@ export const adminUpdateVehiclePlate = asyncHandler(async (req: AuthRequest, res
   // An admin decision supersedes any rider proposal that was queued.
   (fresh as any).pendingVehicle = emptyPendingVehicle();
   await fresh.save();
+  void recordAdminAction({
+    adminId: String(req.user._id),
+    action: 'rider_vehicle_plate',
+    targetType: 'rider',
+    targetId: String(profile.user),
+    detail: `plate set to ${vehiclePlate}`,
+  });
 
   await notifyUser(String(profile.user), {
     type: 'system',
@@ -566,6 +606,13 @@ export const adminApproveVehicleChange = asyncHandler(async (req: AuthRequest, r
   }
   (fresh as any).pendingVehicle = emptyPendingVehicle();
   await fresh.save();
+  void recordAdminAction({
+    adminId: String(req.user._id),
+    action: 'rider_vehicle_decision',
+    targetType: 'rider',
+    targetId: String(profile.user),
+    detail: `approved: ${pending.vehicleType ?? ''} ${pending.vehicleBrand ?? ''} ${pending.vehiclePlate ?? ''}`.trim(),
+  });
 
   await notifyUser(String(profile.user), {
     type: 'system',
@@ -590,6 +637,13 @@ export const adminRejectVehicleChange = asyncHandler(async (req: AuthRequest, re
   if (!fresh) throw NOT_FOUND('Rider');
   (fresh as any).pendingVehicle = emptyPendingVehicle();
   await fresh.save();
+  void recordAdminAction({
+    adminId: String(req.user._id),
+    action: 'rider_vehicle_decision',
+    targetType: 'rider',
+    targetId: String(profile.user),
+    detail: reason?.trim() ? `rejected: ${reason.trim()}` : 'rejected',
+  });
 
   await notifyUser(String(profile.user), {
     type: 'system',

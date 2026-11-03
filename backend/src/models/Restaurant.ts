@@ -64,6 +64,13 @@ export interface Restaurant {
    */
   isApproved: boolean;
 
+  /**
+   * Kitchen prep window override in minutes (portal setting). When set, the
+   * customer-visible delivery estimate prepends this instead of the generic
+   * `deliveryTimeMin`; menu items keep their own per-item `prepMin`.
+   */
+  prepTimeMin?: number | null;
+
   location: RestaurantLocation;
 
   hours: RestaurantHours;
@@ -103,6 +110,7 @@ export const RestaurantModel = defineModel<Restaurant>({
     'area',
     'ownerUser',
     'isApproved',
+    'prepTimeMin',
     'location',
     'hours',
     'deletedAt',

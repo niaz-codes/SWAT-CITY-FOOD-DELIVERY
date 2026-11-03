@@ -4,15 +4,19 @@ import {
   createOrderPayment,
   easypaisaNotify,
   getOrderPayment,
+  getOrderTransferDetails,
+  getOrderTransferReceipt,
   jazzCashReturn,
   listPaymentMethods,
   renderGatewayHandoff,
+  submitOrderTransferProof,
   verifyOrderPayment,
 } from '../controllers/payment.controller';
 import { requireAuth, requireCustomer } from '../middleware/auth';
 import { paymentRateLimiter } from '../middleware/rateLimit';
 import { validate } from '../middleware/validate';
-import { initiatePaymentSchema } from '../validations/payment';
+import { upload } from '../middleware/upload';
+import { initiatePaymentSchema, manualTransferProofSchema } from '../validations/payment';
 
 const router = Router();
 
@@ -42,5 +46,19 @@ router.post('/orders/:id/payment/abandon', abandonOrderPayment);
 // There is no `payment/cash` route. Switching an order off a gateway to cash
 // would let an unpaid order be treated as payable on delivery, so the only way
 // out of a failed payment is a fresh verified gateway payment.
+
+// --- Direct bank/wallet transfer (UBL + manual Easypaisa/JazzCash) -----------
+// GET  : instructions + current proof state (order-scoped, owner-checked).
+// POST : submit the transaction reference + receipt screenshot. Submission
+//        sets `pending_verification`; it never settles anything — only the
+//        admin review (separate route) can confirm money actually moved.
+router.get('/orders/:id/transfer', getOrderTransferDetails);
+router.post(
+  '/orders/:id/transfer',
+  upload.single('receipt'),
+  validate(manualTransferProofSchema),
+  submitOrderTransferProof,
+);
+router.get('/orders/:id/transfer/receipt', getOrderTransferReceipt);
 
 export default router;

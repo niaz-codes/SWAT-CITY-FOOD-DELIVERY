@@ -26,6 +26,7 @@ import {
   httpGet,
   httpPatch,
   httpPost,
+  httpUpload,
   httpUploadWithProgress,
   setApiTokens,
 } from './client';
@@ -315,7 +316,7 @@ const mapOrderStatus = (s?: string): Order['status'] => {
     case 'cancelled':
       return 'cancelled';
     case 'rider_assigned':
-      return 'ready';
+      return 'rider_assigned';
     default:
       return 'placed';
   }
@@ -781,13 +782,114 @@ export const foodApi = {
 // Payments
 // ---------------------------------------------------------------------------
 
-export type CheckoutPaymentMethod = 'easypaisa' | 'jazzcash' | 'demo';
+export type CheckoutPaymentMethod =
+  | 'easypaisa'
+  | 'jazzcash'
+  | 'demo'
+  | 'ubl'
+  | 'easypaisa_transfer'
+  | 'jazzcash_transfer';
 
-export type GatewayMethodInfo = {
-  method: string;
-  displayName: string;
-  enabled: boolean;
-  reason?: string;
+/**
+ * Direct bank / wallet transfer methods. No gateway is involved: the customer
+ * moves the money themselves (UBL account, Easypaisa or JazzCash number) and
+ * submits the transfer receipt in-app; an admin then verifies the transfer
+ * against the real bank statement. Nothing here is settled by the app.
+ */
+export type ManualTransferMethod = 'ubl' | 'easypaisa_transfer' | 'jazzcash_transfer';
+
+export const MANUAL_TRANSFER_METHODS: ManualTransferMethod[] = [
+  'ubl',
+  'easypaisa_transfer',
+  'jazzcash_transfer',
+];
+
+/** Narrowing guard for the manual transfer methods. */
+export const isManualTransferMethod = (method: string): method is ManualTransferMethod =>
+  (MANUAL_TRANSFER_METHODS as string[]).includes(method);
+
+/** The receiving account the customer transfers to, served from server config. */
+export type TransferAccount = {
+  channel: 'ubl' | 'easypaisa' | 'jazzcash';
+  method: ManualTransferMethod;
+  label: string;
+  bankName?: string;
+  accountTitle?: string;
+  accountNumber?: string;
+  iban?: string;
+  branch?: string;
+  instructions?: string;
+};
+
+/**
+ * Order-scoped transfer instructions + the current proof state, exactly as
+ * `GET /payments/orders/:id/transfer` returns them.
+ */
+export type TransferInstructions = {
+  order: {
+    id: string;
+    orderNumber: string;
+    total: number;
+    paymentStatus: string;
+    paymentMethod: string;
+  };
+  account: TransferAccount;
+  attemptsLeft: number;
+  payment: {
+    id: string;
+    status: string;
+    transactionRef?: string;
+    failureReason?: string;
+    submittedAt?: string;
+  } | null;
+};
+
+/**
+ * Re-hydrates the transfer payload defensively: every displayed figure is read
+ * from the response, but a missing/malformed field degrades to a safe value
+ * instead of crashing the instructions screen.
+ */
+const normalizeTransferInstructions = (raw: unknown): TransferInstructions => {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const order = (r.order ?? {}) as Record<string, unknown>;
+  const account = (r.account ?? {}) as Record<string, unknown>;
+  const payment = (r.payment ?? null) as Record<string, unknown> | null;
+  const str = (v: unknown, fallback = ''): string =>
+    typeof v === 'string' && v ? v : typeof v === 'number' ? String(v) : fallback;
+  return {
+    order: {
+      id: str(order.id ?? order._id),
+      orderNumber: str(order.orderNumber),
+      total: Number(order.total ?? 0),
+      paymentStatus: str(order.paymentStatus, 'pending'),
+      paymentMethod: str(order.paymentMethod),
+    },
+    account: {
+      channel: (account.channel === 'easypaisa' || account.channel === 'jazzcash'
+        ? account.channel
+        : 'ubl') as TransferAccount['channel'],
+      method: (isManualTransferMethod(str(account.method))
+        ? str(account.method)
+        : 'ubl') as TransferAccount['method'],
+      label: str(account.label, 'Direct Bank Transfer'),
+      bankName: account.bankName ? str(account.bankName) : undefined,
+      accountTitle: account.accountTitle ? str(account.accountTitle) : undefined,
+      accountNumber: account.accountNumber ? str(account.accountNumber) : undefined,
+      iban: account.iban ? str(account.iban) : undefined,
+      branch: account.branch ? str(account.branch) : undefined,
+      instructions: account.instructions ? str(account.instructions) : undefined,
+    },
+    attemptsLeft: Number(r.attemptsLeft ?? 0),
+    payment: payment
+      ? {
+          id: str(payment.id ?? payment._id),
+          status: str(payment.status),
+          transactionRef: payment.transactionRef ? str(payment.transactionRef) : undefined,
+          failureReason: payment.failureReason ? str(payment.failureReason) : undefined,
+          submittedAt: payment.submittedAt ? str(payment.submittedAt) : undefined,
+        }
+      : null,
+  };
 };
 
 export type OrderQuote = {
@@ -807,7 +909,6 @@ export type OrderQuote = {
     gradient?: string[];
     cuisine?: string;
   };
-  methods: GatewayMethodInfo[];
 };
 
 export type PaymentHandoff = { type: 'form'; url: string } | { type: 'redirect'; url: string };
@@ -823,6 +924,12 @@ export type PlaceOrderResult = {
   };
   /** Present only for online wallets: how to send the payer to the gateway. */
   handoff: PaymentHandoff | null;
+  /**
+   * Present (non-null) for manual bank/wallet transfer orders: the receiving
+   * account + proof state the transfer-instructions screen needs. Null for
+   * every gateway flow.
+   */
+  transferDetails: TransferInstructions | null;
 };
 
 export type PaymentState = {
@@ -864,12 +971,6 @@ export const cartApi = {
 };
 
 export const paymentApi = {
-  /** Which gateways are usable right now, so the UI can disable unavailable ones. */
-  async methods(): Promise<GatewayMethodInfo[]> {
-    const res = await httpGet<{ methods?: GatewayMethodInfo[] }>('/payments/methods');
-    return res.data.methods ?? [];
-  },
-
   /**
    * Server-authoritative price preview. The checkout screen renders these figures
    * rather than computing money on the device.
@@ -883,27 +984,6 @@ export const paymentApi = {
     return res.data;
   },
 
-  /**
-   * Asks the server to confirm the payment with the gateway. This is the only
-   * trustworthy status source — a browser redirect is never treated as proof.
-   */
-  async verify(orderId: string): Promise<{
-    status: 'paid' | 'failed' | 'pending';
-    reason?: string;
-    orderPaymentStatus?: string;
-  }> {
-    const res = await httpPost<{
-      status: 'paid' | 'failed' | 'pending';
-      reason?: string;
-      order?: { paymentStatus?: string };
-    }>(`/payments/orders/${orderId}/payment/verify`);
-    return {
-      status: res.data.status,
-      reason: res.data.reason,
-      orderPaymentStatus: res.data.order?.paymentStatus,
-    };
-  },
-
   async status(orderId: string): Promise<PaymentState> {
     const res = await httpGet<PaymentState>(`/payments/orders/${orderId}/payment`);
     return res.data;
@@ -915,17 +995,93 @@ export const paymentApi = {
   },
 };
 
+export type ManualTransferSubmitResult = {
+  message: string;
+  awaitingVerification: boolean;
+};
+
+/**
+ * Customer-facing manual transfer flow (UBL / Easypaisa / JazzCash direct
+ * transfer). The details endpoint is owner-checked by the backend, so the
+ * receiving account details only ever travel to the order's own customer.
+ */
+export const transferApi = {
+  /** Transfer instructions + current proof state for one order. */
+  async details(orderId: string): Promise<TransferInstructions> {
+    const res = await httpGet<TransferInstructions>(`/payments/orders/${orderId}/transfer`);
+    return normalizeTransferInstructions(res.data);
+  },
+
+  /**
+   * Submits the transfer proof: the transaction/reference ID typed from the
+   * payer's own receipt, plus the receipt image.
+   *
+   * Multipart like the rider document upload — the image travels as a file
+   * attachment and fetch sets the boundary. The server caps the receipt at
+   * 5MB and answers 409 (verbatim messages) when the proof is already with an
+   * admin, the reference is already used, or the attempts are exhausted.
+   */
+  async submit(
+    orderId: string,
+    input: { transactionRef: string; imageUri: string; mimeType?: string },
+  ): Promise<ManualTransferSubmitResult> {
+    const uri = input.imageUri;
+    // The picker usually hands back a JPEG; Android's editor can save PNG and
+    // WEBP is possible on some devices. The declared type must match the bytes.
+    const mimeType =
+      input.mimeType ??
+      (/\.png(\?|$)/i.test(uri)
+        ? 'image/png'
+        : /\.webp(\?|$)/i.test(uri)
+          ? 'image/webp'
+          : 'image/jpeg');
+    const ext = mimeType.toLowerCase().includes('png')
+      ? 'png'
+      : mimeType.toLowerCase().includes('webp')
+        ? 'webp'
+        : 'jpg';
+    const form = new FormData();
+    form.append('transactionRef', input.transactionRef.trim());
+    form.append('receipt', {
+      uri,
+      name: `receipt.${ext}`,
+      type: mimeType,
+    } as unknown as Blob);
+    const res = await httpUpload<{
+      message?: string;
+      awaitingVerification?: boolean;
+    }>(`/payments/orders/${orderId}/transfer`, form);
+    return {
+      message:
+        res.data.message ?? 'Payment submitted. Waiting for admin verification.',
+      awaitingVerification: Boolean(res.data.awaitingVerification),
+    };
+  },
+
+  /** Signed URL to view the customer's own uploaded receipt. Empty when absent. */
+  async receiptUrl(orderId: string): Promise<string> {
+    const res = await httpGet<{ url?: string }>(`/payments/orders/${orderId}/transfer/receipt`);
+    return typeof res.data.url === 'string' ? res.data.url : '';
+  },
+};
+
 /** Live tracking payload from `/orders/:id/track`. */
 export type OrderLiveTracking = {
   orderId: string;
+  orderNumber?: string | null;
   status: OrderStatus;
   trackingActive: boolean;
   estimatedMinutes: number | null;
+  pickup: { lat: number; lng: number; name: string; address: string; area: string } | null;
+  destination: { lat: number; lng: number; address: string } | null;
+  riderDistanceKm: number | null;
+  etaMinutes: number | null;
   rider: {
     id: string;
     name: string;
     phone: string;
     avatarUrl: string | null;
+    online: boolean;
     location: { lat: number; lng: number; heading: number; updatedAt: string | null } | null;
   } | null;
 };
@@ -976,6 +1132,7 @@ export const orderApi = {
         currency?: string;
       };
       handoff?: PaymentHandoff | null;
+      transferDetails?: TransferInstructions | null;
     }>('/orders', {
       addressId,
       // `card` is no longer offered: no card gateway is integrated.
@@ -1001,6 +1158,11 @@ export const orderApi = {
       },
       // The server decides whether a redirect/form handoff is needed.
       handoff: placed.data.handoff ?? null,
+      // Manual-transfer orders carry their receiving account + proof state;
+      // gateways leave this null. Normalized for the same defensive reasons.
+      transferDetails: placed.data.transferDetails
+        ? normalizeTransferInstructions(placed.data.transferDetails)
+        : null,
     };
   },
 
@@ -1037,26 +1199,51 @@ export const orderApi = {
       status?: string;
       trackingActive?: boolean;
       estimatedMinutes?: number;
+      pickup?: { lat?: number; lng?: number; name?: string; address?: string; area?: string } | null;
+      destination?: { lat?: number; lng?: number; address?: string } | null;
+      riderDistanceKm?: number | null;
+      etaMinutes?: number | null;
       rider?: {
         id?: string;
         name?: string;
         phone?: string;
         avatarUrl?: string | null;
+        online?: boolean;
         location?: { lat?: number; lng?: number; heading?: number; updatedAt?: string } | null;
       } | null;
     }>(`/orders/${id}/track`);
     const d = res.data;
+    const pickup =
+      d.pickup && typeof d.pickup.lat === 'number' && typeof d.pickup.lng === 'number'
+        ? {
+            lat: d.pickup.lat,
+            lng: d.pickup.lng,
+            name: d.pickup.name ?? 'Restaurant',
+            address: d.pickup.address ?? '',
+            area: d.pickup.area ?? '',
+          }
+        : null;
+    const destination =
+      d.destination && typeof d.destination.lat === 'number' && typeof d.destination.lng === 'number'
+        ? { lat: d.destination.lat, lng: d.destination.lng, address: d.destination.address ?? '' }
+        : null;
     return {
       orderId: d.orderId ?? id,
+      orderNumber: d.orderNumber ?? null,
       status: (d.status ?? 'placed') as OrderStatus,
       trackingActive: Boolean(d.trackingActive),
       estimatedMinutes: d.estimatedMinutes ?? null,
+      pickup,
+      destination,
+      riderDistanceKm: typeof d.riderDistanceKm === 'number' ? d.riderDistanceKm : null,
+      etaMinutes: typeof d.etaMinutes === 'number' ? d.etaMinutes : null,
       rider: d.rider
         ? {
             id: String(d.rider.id ?? ''),
             name: d.rider.name ?? 'Your rider',
             phone: d.rider.phone ?? '',
             avatarUrl: d.rider.avatarUrl ?? null,
+            online: Boolean(d.rider.online),
             location:
               d.rider.location &&
               typeof d.rider.location.lat === 'number' &&
@@ -1458,9 +1645,17 @@ export const jobApi = {
     };
   },
 
-  /** Accepts a ready food order from the pickup pool. */
-  async acceptFood(orderId: string): Promise<void> {
-    await httpPost('/rider/jobs/accept', { orderId });
+  /**
+   * Accepts an offered / ready food order. First Accept wins server-side
+   * (atomic SQL claim): on success the claimed order id comes back, a loser
+   * gets 409 and `null` here so the UI can say "someone else took it".
+   */
+  async acceptFood(orderId: string): Promise<{ id: string } | null> {
+    const res = await httpPost<{ order?: { _id?: unknown } | null }>('/rider/jobs/accept', {
+      orderId,
+    });
+    const id = res.data?.order?._id;
+    return id ? { id: String(id) } : null;
   },
 
   /** Advances the delivery leg: picked_up → on_the_way → delivered. */

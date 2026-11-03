@@ -49,6 +49,12 @@ export function emitToUser(userId: string, event: string, payload: unknown): voi
   server.to(`user:${userId}`).emit(event, payload);
 }
 
+/** Unit-safe broadcast to every connected rider (join is role-gated). */
+export function emitToRiders(event: string, payload: unknown): void {
+  if (!io) return;
+  getIO().to('role:rider').emit(event, payload);
+}
+
 /**
  * Fan a rider's fix out to only the people allowed to see it.
  *
@@ -260,8 +266,18 @@ export const SOCKET_EVENTS = {
   orderCreated: 'order:created',
   orderStatus: 'order:status',
   orderRiderAssigned: 'order:rider-assigned',
+  /**
+   * Live dispatch offer to a rider's private room:
+   * { orderId, attempt, ttlMs, restaurant, dropoff, distanceKm, payout, ... }.
+   * Riders answer with POST /rider/jobs/accept — the socket never claims a job.
+   */
+  orderRequest: 'order:request',
+  /** An offered order was taken/cancelled — remove it from every rider card. */
+  orderRequestResolved: 'order:request:resolved',
   riderLocation: 'rider:location',
   notificationNew: 'notification:new',
+  /** Per-order chat: payload { orderId, message } targeted at the recipient. */
+  chatMessage: 'chat:message',
 } as const;
 
 // Re-export to avoid importing this file's types from controllers directly.

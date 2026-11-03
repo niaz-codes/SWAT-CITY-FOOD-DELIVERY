@@ -7,11 +7,13 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { AppState, type AppStateStatus } from 'react-native';
+import { AppState, Platform, type AppStateStatus } from 'react-native';
 import type { LocationSubscription } from 'expo-location';
 import {
+  isDeliveryTaskRunning,
   shouldShareLocation,
   startLocationSharing,
+  stopDeliveryTask,
   stopLocationSharing,
 } from '../services/riderLocation';
 import { closeSocket, getSocket } from '../services/socket';
@@ -60,6 +62,11 @@ async function fetchRiderProfile(): Promise<RiderProfile | null> {
 export function RiderLocationProvider({ children }: { children: React.ReactNode }) {
   const { user, isRider } = useAuth();
   const subscriptionRef = useRef<LocationSubscription | null>(null);
+  // Which transport currently owns the GPS upload: a plain foreground watcher
+  // (`watch`) or the Android foreground-service task that outlives
+  // backgrounding (`task`) while a delivery is active. Transitions between the
+  // two must tear down the old one first, or BOTH could keep sending fixes.
+  const modeRef = useRef<'none' | 'watch' | 'task'>('none');
   const [sharing, setSharing] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [profile, setProfile] = useState<RiderProfile | null>(null);
@@ -68,6 +75,10 @@ export function RiderLocationProvider({ children }: { children: React.ReactNode 
   const stop = useCallback(() => {
     stopLocationSharing(subscriptionRef.current);
     subscriptionRef.current = null;
+    if (modeRef.current === 'task') {
+      void stopDeliveryTask();
+    }
+    modeRef.current = 'none';
     setSharing(false);
   }, []);
 
@@ -95,41 +106,88 @@ export function RiderLocationProvider({ children }: { children: React.ReactNode 
   }, [isRider, user?.id]);
 
   // Start/stop based on approval and status, not on which screen is open.
+  // A `busy` rider (active delivery) additionally runs the Android
+  // foreground-service GPS task, so positions keep flowing in the background
+  // (rider inside Google Maps / phone locked) and the customer's map stays
+  // live. Idle online riders use the plain foreground watcher, which is torn
+  // down on backgrounding exactly as before.
   useEffect(() => {
     const approved = profile?.approvalStatus === 'approved';
-    const wanted = isRider && approved && shouldShareLocation(profile?.status);
+    const busy = profile?.status === 'busy';
+    const wanted = Boolean(isRider && approved && shouldShareLocation(profile?.status));
     let cancelled = false;
 
     void (async () => {
       if (!wanted) {
         // Yield once so no state update lands synchronously inside the effect
-        // body (React Compiler rule); then tear the watcher down.
+        // body (React Compiler rule); then tear everything down — this also
+        // kills a foreground-service task left registered by an app kill.
         await Promise.resolve();
         if (cancelled) return;
+        stop();
+        return;
+      }
+
+      // Delivery just finished: bring the foreground service down before the
+      // watcher takes over, so the OS notification disappears immediately.
+      if (modeRef.current === 'task' && !busy) {
+        await stopDeliveryTask();
+        if (cancelled) return;
+        modeRef.current = 'none';
+      }
+      // Rider became busy while a plain watcher runs: upgrade to the
+      // foreground service (a second transport must not stack on top).
+      if (modeRef.current === 'watch' && busy) {
         stopLocationSharing(subscriptionRef.current);
         subscriptionRef.current = null;
-        setSharing(false);
+        modeRef.current = 'none';
+      }
+      if (modeRef.current === 'task' && busy) {
+        setSharing(true);
         return;
       }
-      if (subscriptionRef.current) return;
+      if (modeRef.current === 'watch' && !busy) {
+        setSharing(true);
+        return;
+      }
+      if (modeRef.current !== 'none') return;
 
-      // The socket is opened before the first fix so uploads prefer the
-      // authenticated, low-latency transport.
       await getSocket();
-      const subscription = await startLocationSharing();
+      const subscription = await startLocationSharing(undefined, busy);
       if (cancelled) {
-        // The effect was torn down while the watcher was starting (logout /
-        // mode switch). Tear the fresh subscription down immediately so GPS
-        // does not keep uploading in the background, and do not touch state —
-        // this component may already be unmounted.
+        // The effect was torn down while the transport was starting (logout /
+        // mode switch). Tear the fresh one down immediately so GPS does not
+        // keep uploading in the background, and do not touch state — this
+        // component may already be unmounted.
         stopLocationSharing(subscription);
+        if (busy && !subscription) void stopDeliveryTask();
         return;
       }
+
       if (!subscription) {
+        if (busy) {
+          // The foreground-service task accepted (Android): it persists across
+          // backgrounding and owns upload from here on.
+          modeRef.current = 'task';
+          setPermissionDenied(false);
+          setSharing(true);
+          return;
+        }
         setPermissionDenied(true);
         return;
       }
+
+      // Idle-online watcher. A leftover task from a previous session must go,
+      // otherwise two transports would upload the same fixes.
+      if (Platform.OS === 'android' && (await isDeliveryTaskRunning())) {
+        await stopDeliveryTask();
+      }
+      if (cancelled) {
+        stopLocationSharing(subscription);
+        return;
+      }
       subscriptionRef.current = subscription;
+      modeRef.current = 'watch';
       setPermissionDenied(false);
       setSharing(true);
     })();
@@ -151,14 +209,18 @@ export function RiderLocationProvider({ children }: { children: React.ReactNode 
   // Backgrounding the app should not keep a foreground-only watcher alive, and
   // coming back must restart it. Without the tick, a rider who switched away
   // would stay permanently offline for the rest of the session.
+  // Exception: mid-delivery (`busy`) the subscription carries the Android
+  // foregroundService option, so backgrounding does NOT kill it — the rider
+  // may be navigating in another app while the customer tracks the dot.
   useEffect(() => {
+    const busyDelivery = profile?.status === 'busy';
     const onChange = (next: AppStateStatus) => {
       if (next === 'active') setResumeTick((t) => t + 1);
-      else stop();
+      else if (!(next === 'background' && busyDelivery)) stop();
     };
     const subscription = AppState.addEventListener('change', onChange);
     return () => subscription.remove();
-  }, [stop]);
+  }, [stop, profile?.status]);
 
   const value = useMemo<RiderLocationState>(
     () => ({ sharing, permissionDenied, profile: isRider ? profile : null, refreshProfile }),

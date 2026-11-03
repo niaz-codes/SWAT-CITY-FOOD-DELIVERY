@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
   StyleSheet,
   TextInput,
   View,
+  type ViewStyle,
 } from 'react-native';
 import Animated, { FadeInUp, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,7 +19,7 @@ import { AppText } from '../../components/AppText';
 import { AppButton } from '../../components/AppButton';
 import { AppHeader } from '../../components/AppHeader';
 import { MapComponent } from '../../components/MapComponent';
-import { LeafletMap } from '../../components/map/LeafletMap';
+import { LeafletMap, type MapMarker } from '../../components/map/LeafletMap';
 import { Avatar } from '../../components/Avatar';
 import { ErrorState } from '../../components/EmptyState';
 import { useThemeColors } from '../../theme';
@@ -25,6 +28,8 @@ import {
   orderApi,
   paymentApi,
   reviewApi,
+  transferApi,
+  isManualTransferMethod,
   type OrderLiveTracking,
   type PaymentState,
 } from '../../services/api';
@@ -41,9 +46,35 @@ import { OrderStatus, type RiderLocationEvent } from '../../types/domain';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OrderTracking'>;
 
+/**
+ * The customer's own uploaded payment screenshot, loaded through the
+ * owner-checked signed URL endpoint (`transferApi.receiptUrl`) — never a
+ * public storage link. Fetched only for direct-transfer orders waiting on /
+ * rejected by verification; renders nothing when no proof is on file yet
+ * (404) so brand-new manual orders stay clean.
+ */
+function PaymentProofPreview({ orderId }: { orderId: string }) {
+  const { colors } = useThemeColors();
+  const proof = useAsyncData(() => transferApi.receiptUrl(orderId), [orderId]);
+  if (!proof.data) return null;
+  return (
+    <View style={styles.proofWrap}>
+      <Image
+        source={{ uri: proof.data }}
+        style={[styles.proofImage, { backgroundColor: colors.surfaceMuted }]}
+        resizeMode="contain"
+      />
+      <AppText variant="micro" color={colors.textMuted}>
+        Your uploaded payment screenshot
+      </AppText>
+    </View>
+  );
+}
+
 const STEPS: { key: OrderStatus; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { key: 'confirmed', label: 'Confirmed', icon: 'checkmark-circle-outline' },
   { key: 'preparing', label: 'Preparing', icon: 'restaurant-outline' },
+  { key: 'rider_assigned', label: 'Rider assigned', icon: 'navigate-outline' },
   { key: 'picked_up', label: 'Picked up', icon: 'bicycle-outline' },
   { key: 'delivered', label: 'Delivered', icon: 'home-outline' },
 ];
@@ -61,6 +92,11 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
     easypaisa: 'Easypaisa',
     jazzcash: 'JazzCash',
     wallet: 'Swat City Food Delivery wallet',
+    // Direct bank/wallet transfer orders: payment happens by hand, then the
+    // receipt is verified by an admin.
+    ubl: 'Direct Bank Transfer (UBL)',
+    easypaisa_transfer: 'Easypaisa – Direct Transfer',
+    jazzcash_transfer: 'JazzCash – Direct Transfer',
   };
 
   const PAYMENT_STATUS_LABELS: Record<string, string> = {
@@ -69,6 +105,10 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
     paid: 'Paid',
     failed: 'Failed',
     cancelled: 'Cancelled',
+    // Manual transfer lifecycle: the proof sits with an admin until the bank
+    // statement is checked, and a rejection always comes with a reason.
+    pending_verification: 'Awaiting verification',
+    rejected: 'Not verified - proof rejected',
   };
 
   const order = useAsyncData(() => orderApi.trackOrder(orderId), [orderId]);
@@ -143,8 +183,18 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
    */
   const [paymentState, setPaymentState] = useState<PaymentState | null>(null);
   const paymentStatus = paymentState?.payment?.status ?? 'pending';
+  /**
+   * Terminal payment states stop the poll. The manual-transfer states are
+   * deliberately NOT terminal here — `pending_verification` flips to paid or
+   * rejected when an admin decides, and `rejected` expects the customer to
+   * resubmit — so both must keep polling. The order itself being cancelled
+   * always ends the poll: no payment decision is coming either way.
+   */
   const paymentSettled =
-    paymentStatus === 'paid' || paymentStatus === 'failed' || paymentStatus === 'cancelled';
+    paymentStatus === 'paid' ||
+    paymentStatus === 'failed' ||
+    paymentStatus === 'cancelled' ||
+    (order.data?.status ?? 'placed') === 'cancelled';
 
   useEffect(() => {
     let cancelled = false;
@@ -173,9 +223,10 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
     confirmed: 1,
     preparing: 2,
     ready: 2,
-    picked_up: 3,
-    on_the_way: 3,
-    delivered: 4,
+    rider_assigned: 3,
+    picked_up: 4,
+    on_the_way: 4,
+    delivered: 5,
     cancelled: 0,
   };
 
@@ -188,10 +239,14 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
       return;
     }
     mapProgress.value = 0;
-    mapProgress.value = withRepeat(withTiming(activeStep / 4, { duration: 6000 }), -1, false);
+    mapProgress.value = withRepeat(withTiming(activeStep / 5, { duration: 6000 }), -1, false);
   }, [delivered, activeStep, mapProgress]);
 
-  const riderBubble = useAnimatedStyle(() => ({ opacity: delivered ? 0 : 1 }));
+  // Reanimated 4 + the 19.x style types disagree on the returned handle, so the
+  // shared opacity style is narrowed to the shape Animated.View consumes.
+  const riderBubble = useAnimatedStyle(
+    () => ({ opacity: delivered ? 0 : 1 }),
+  ) as unknown as ViewStyle;
 
   /**
    * Customer cancel + rating flows. The backend decides both: cancel is legal
@@ -207,9 +262,46 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [rateOpen, setRateOpen] = useState(false);
   const [rated, setRated] = useState(false);
+  const [riderRateOpen, setRiderRateOpen] = useState(false);
+  const [riderRated, setRiderRated] = useState(false);
   // Chat channel for follow-up questions on an order that already exists in
   // the app — it never creates or changes this order.
   const [whatsOpen, setWhatsOpen] = useState(false);
+
+  // Rider-rating step: resolves the target from the live-tracking payload /
+  // order snapshot. Both carry the rider USER id, which is what a `rider`
+  // review is verified against server-side (it must equal order.rider on the
+  // delivered order). Duplicates answer 409 and surface as "already rated".
+  const riderRatingTargetId = tracking?.rider?.id ?? order.data?.rider?.id ?? '';
+  const submitRiderRating = useCallback(
+    async (rating: number, comment: string) => {
+      if (!riderRatingTargetId) return;
+      setBusy(true);
+      try {
+        await reviewApi.create({
+          targetType: 'rider',
+          targetId: riderRatingTargetId,
+          rating,
+          comment: comment.trim() ? comment.trim() : undefined,
+          orderId,
+        });
+        setRiderRated(true);
+        setRiderRateOpen(false);
+        success('Thanks for rating your rider!');
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409) {
+          setRiderRated(true);
+          setRiderRateOpen(false);
+          success('You already rated this rider');
+        } else {
+          toastError(e instanceof Error ? e.message : 'Could not submit the rating.');
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    [riderRatingTargetId, orderId, success, toastError],
+  );
 
   const submitCancel = useCallback(
     async (reason: string) => {
@@ -269,7 +361,8 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
       placed: { text: 'Order placed', sub: 'Waiting for restaurant to accept' },
       confirmed: { text: 'Order confirmed', sub: 'The restaurant accepted your order' },
       preparing: { text: 'Being prepared', sub: 'Your food is being cooked fresh' },
-      ready: { text: 'Ready for pickup', sub: 'A rider is on the way' },
+      ready: { text: 'Ready for pickup', sub: 'Finding a rider for your order' },
+      rider_assigned: { text: 'Rider assigned', sub: 'Your rider is heading to the restaurant' },
       picked_up: { text: 'On the way', sub: 'Rider picked up your order' },
       on_the_way: { text: 'Rider in transit', sub: 'Heading to your address' },
       delivered: { text: 'Delivered', sub: 'Enjoy your meal from Swat City Food Delivery!' },
@@ -307,42 +400,131 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
 
   const current = order.data!;
 
+  // Rider identity for the card and the dialer: the live tracking payload is
+  // authoritative (it carries the real phone number); the order snapshot fills
+  // any hole (older payload / tracking request still in flight).
+  const liveRider = tracking?.rider ?? null;
+  const riderName = liveRider?.name || current.rider?.name || 'Your rider';
+  const riderPhone = liveRider?.phone || current.rider?.phone || '';
+  // Rating target: both payloads carry the rider USER id, which is exactly what
+  // a `rider` review is verified against server-side (it must equal order.rider).
+  const riderId = liveRider?.id || current.rider?.id || '';
+  const callRider = () => {
+    haptics.light();
+    if (!riderPhone) {
+      toastError('No phone number available yet.');
+      return;
+    }
+    Linking.openURL(`tel:${riderPhone}`).catch(() => toastError('Could not open the dialer.'));
+  };
+
+  // Live ETA: while a rider is moving, the server's hop-to-next-stop estimate
+  // beats the kitchen's whole-journey guess; otherwise keep the order's ETA.
+  const etaMinutes =
+    tracking?.trackingActive && tracking.etaMinutes != null
+      ? tracking.etaMinutes
+      : current.estimatedMinutes;
+  const distanceText =
+    tracking?.trackingActive && tracking.riderDistanceKm != null
+      ? `${tracking.riderDistanceKm.toFixed(1)} km away`
+      : '';
+
+  // Real map: restaurant pickup point + delivery destination + (while live)
+  // the moving rider, with the pickup→destination polyline behind them. All of
+  // the coordinates come from the server payload — nothing is synthesized.
+  const stopMarkers: MapMarker[] = [
+    ...(tracking?.pickup
+      ? [
+          {
+            id: 'pickup',
+            lat: tracking.pickup.lat,
+            lng: tracking.pickup.lng,
+            kind: 'restaurant' as const,
+            label: 'Pickup',
+            popupLines: [{ label: 'Pickup', value: tracking.pickup.name }],
+          },
+        ]
+      : []),
+    ...(tracking?.destination
+      ? [
+          {
+            id: 'destination',
+            lat: tracking.destination.lat,
+            lng: tracking.destination.lng,
+            kind: 'destination' as const,
+            label: 'Your address',
+          },
+        ]
+      : []),
+  ];
+  const liveMarker: MapMarker | null =
+    tracking?.trackingActive && tracking.rider?.location
+      ? {
+          id: `rider:${tracking.rider.id}`,
+          lat: tracking.rider.location.lat,
+          lng: tracking.rider.location.lng,
+          kind: 'rider',
+          avatarUrl: tracking.rider.avatarUrl,
+          heading: tracking.rider.location.heading,
+          selected: true,
+          popupLines: [{ label: 'Rider', value: riderName }],
+        }
+      : null;
+  const mapMarkers: MapMarker[] = [...stopMarkers, ...(liveMarker ? [liveMarker] : [])];
+  const routePoints =
+    tracking?.pickup && tracking?.destination
+      ? [
+          { lat: tracking.pickup.lat, lng: tracking.pickup.lng },
+          { lat: tracking.destination.lat, lng: tracking.destination.lng },
+        ]
+      : [];
+  const hasRealMap = mapMarkers.length > 0;
+
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
       <AppHeader title={`Order ${current.id}`} onBack={() => navigation.goBack()} elevated />
 
       <View style={styles.mapWrap}>
-        {tracking?.trackingActive && tracking.rider?.location && tracking.rider ? (
+        {hasRealMap ? (
           <>
             <LeafletMap
-              markers={[
-                {
-                  id: `rider:${tracking.rider.id}`,
-                  lat: tracking.rider.location.lat,
-                  lng: tracking.rider.location.lng,
-                  kind: 'rider',
-                  avatarUrl: tracking.rider.avatarUrl,
-                  heading: tracking.rider.location.heading,
-                  selected: true,
-                  popupLines: [{ label: 'Rider', value: tracking.rider.name }],
-                },
-              ]}
+              markers={mapMarkers}
+              route={routePoints}
               height={220}
               borderRadius={24}
               followMarkers
             />
-            <Animated.View
-              style={[
-                styles.liveChip,
-                { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
-                riderBubble,
-              ]}
-            >
-              <View style={[styles.liveDot, { backgroundColor: colors.success }]} />
-              <AppText variant="microBold" color={colors.textPrimary}>
-                LIVE
-              </AppText>
-            </Animated.View>
+            {tracking?.trackingActive ? (
+              <>
+                <Animated.View
+                  style={[
+                    styles.liveChip,
+                    { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+                    riderBubble,
+                  ]}
+                >
+                  <View style={[styles.liveDot, { backgroundColor: colors.success }]} />
+                  <AppText variant="microBold" color={colors.textPrimary}>
+                    LIVE
+                  </AppText>
+                </Animated.View>
+                {distanceText ? (
+                  <View
+                    style={[
+                      styles.liveChip,
+                      styles.distanceChip,
+                      { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
+                      riderBubble,
+                    ]}
+                  >
+                    <Ionicons name="navigate" size={12} color={colors.primary} />
+                    <AppText variant="microBold" color={colors.textPrimary}>
+                      {distanceText}
+                    </AppText>
+                  </View>
+                ) : null}
+              </>
+            ) : null}
           </>
         ) : (
           <MapComponent
@@ -371,8 +553,13 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
           <View style={[styles.etaChip, { backgroundColor: colors.primarySoft }]}>
             <Ionicons name="time-outline" size={14} color={colors.primary} />
             <AppText variant="smallMedium" weight="bold" color={colors.primaryStrong}>
-              {current.estimatedMinutes} min
+              {etaMinutes} min
             </AppText>
+            {distanceText ? (
+              <AppText variant="micro" color={colors.primaryStrong}>
+                · {distanceText}
+              </AppText>
+            ) : null}
           </View>
         </View>
 
@@ -431,7 +618,7 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
         </View>
       </Animated.View>
 
-      {current.rider && (
+      {(current.rider || liveRider) && (
         <Animated.View
           entering={FadeInUp.delay(80).duration(300)}
           style={[
@@ -440,21 +627,38 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
           ]}
         >
           <View style={styles.riderRow}>
-            <Avatar size={54} name={current.rider.name} gradient={current.rider.avatarGradient} />
+            <Avatar
+              size={54}
+              name={riderName}
+              gradient={current.rider?.avatarGradient ?? ['#1B84B5', '#0E3F3A']}
+            />
             <View style={styles.riderInfo}>
               <AppText variant="title" weight="bold" color={colors.textPrimary}>
-                {current.rider.name}
+                {riderName}
               </AppText>
               <AppText variant="small" color={colors.textMuted}>
-                {current.rider.vehicle} · {current.rider.plateNumber} · ⭐ {current.rider.rating}
+                {tracking?.trackingActive
+                  ? distanceText
+                    ? `Heading to you · ${distanceText}`
+                    : 'Heading to your address'
+                  : current.rider
+                    ? `${current.rider.vehicle} · ${current.rider.plateNumber} · ⭐ ${current.rider.rating}`
+                    : 'Delivering your order'}
               </AppText>
             </View>
             <View style={styles.riderActions}>
               <Pressable
-                onPress={() => haptics.light()}
-                style={[styles.actionBtn, { backgroundColor: colors.surfaceMuted }]}
+                onPress={callRider}
+                style={[
+                  styles.actionBtn,
+                  { backgroundColor: riderPhone ? colors.primary : colors.surfaceMuted },
+                ]}
               >
-                <Ionicons name="call-outline" size={20} color={colors.primary} />
+                <Ionicons
+                  name="call-outline"
+                  size={20}
+                  color={riderPhone ? colors.onPrimary : colors.textMuted}
+                />
               </Pressable>
             </View>
           </View>
@@ -507,7 +711,9 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
               color={
                 paymentStatus === 'paid'
                   ? colors.success
-                  : paymentStatus === 'failed' || paymentStatus === 'cancelled'
+                  : paymentStatus === 'failed' ||
+                      paymentStatus === 'cancelled' ||
+                      paymentStatus === 'rejected'
                     ? colors.danger
                     : colors.warning
               }
@@ -515,6 +721,20 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
               {PAYMENT_STATUS_LABELS[paymentStatus] ?? 'Processing'}
             </AppText>
           </View>
+
+          {paymentStatus === 'pending_verification' &&
+            isManualTransferMethod(paymentState.paymentMethod) && (
+              <AppText variant="micro" color={colors.textMuted} style={styles.refText}>
+                Your transfer is being verified against the bank statement.
+              </AppText>
+            )}
+
+          {/* The uploaded proof itself, for waiting + rejected states: the
+              customer can always see exactly which screenshot is on file. */}
+          {isManualTransferMethod(paymentState.paymentMethod) &&
+            (paymentStatus === 'pending_verification' || paymentStatus === 'rejected') && (
+              <PaymentProofPreview orderId={orderId} />
+            )}
 
           {paymentState.payment?.transactionRef ? (
             <AppText variant="micro" color={colors.textMuted} style={styles.refText}>
@@ -528,8 +748,24 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
             </AppText>
           ) : null}
 
-          {/* An unpaid order can be retried through the same wallet rather than
-              abandoned. There is deliberately no cash fallback any more. */}
+          {/* A rejected manual-transfer proof is fixed by submitting corrected
+              proof on the instructions screen — no gateway to retry. */}
+          {paymentStatus === 'rejected' &&
+            isManualTransferMethod(paymentState.paymentMethod) &&
+            status !== 'cancelled' && (
+              <Pressable
+                onPress={() => navigation.navigate('ManualTransfer', { orderId })}
+                hitSlop={6}
+                style={styles.switchRow}
+              >
+                <AppText variant="micro" color={colors.primary} weight="semiBold">
+                  Submit corrected payment proof
+                </AppText>
+              </Pressable>
+            )}
+
+          {/* An unpaid gateway order can be retried through the same wallet
+              rather than abandoned. There is deliberately no cash fallback. */}
           {paymentStatus === 'failed' && status !== 'cancelled' && (
             <Pressable
               onPress={() => {
@@ -579,6 +815,28 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
         </Pressable>
       )}
 
+      {delivered && Boolean(riderId) && (
+        <Pressable
+          onPress={() => {
+            haptics.light();
+            setRiderRateOpen(true);
+          }}
+          disabled={riderRated}
+          style={[
+            styles.doneBtn,
+            { backgroundColor: riderRated ? colors.surfaceMuted : colors.primary },
+          ]}
+        >
+          <AppText
+            variant="title"
+            weight="bold"
+            color={riderRated ? colors.textMuted : colors.onPrimary}
+          >
+            {riderRated ? 'Rider rating received - thank you' : 'Rate your rider'}
+          </AppText>
+        </Pressable>
+      )}
+
       {delivered && Boolean(reviewRestaurantId) && (
         <View style={styles.ctaRow}>
           <Pressable onPress={() => navigation.goBack()} hitSlop={6} style={styles.cancelBtn}>
@@ -620,6 +878,14 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
         busy={busy}
         onConfirm={(rating, comment) => void submitRating(rating, comment)}
         onClose={() => !busy && setRateOpen(false)}
+      />
+      <RateOrderDialog
+        visible={riderRateOpen}
+        busy={busy}
+        title="How was your rider?"
+        submitLabel="Send rider rating"
+        onConfirm={(rating, comment) => void submitRiderRating(rating, comment)}
+        onClose={() => !busy && setRiderRateOpen(false)}
       />
       <WhatsAppContactDialog
         visible={whatsOpen}
@@ -781,11 +1047,16 @@ const RATE_LABELS = ['', 'Bad', 'Meh', 'Good', 'Great', 'Excellent'] as const;
 export function RateOrderDialog({
   visible,
   busy,
+  title = 'How was your meal?',
+  submitLabel = 'Send rating',
   onConfirm,
   onClose,
 }: {
   visible: boolean
   busy: boolean
+  /** The stars UI is shared between the restaurant and the rider rating step. */
+  title?: string
+  submitLabel?: string
   onConfirm: (rating: number, comment: string) => void
   onClose: () => void
 }) {
@@ -820,7 +1091,7 @@ export function RateOrderDialog({
         >
           <View style={[dialogStyles.iconLine, { backgroundColor: colors.primary }]} />
           <AppText variant="h4" weight="bold" color={colors.textPrimary}>
-            How was your meal?
+            {title}
           </AppText>
           <View style={dialogStyles.stars}>
             {[1, 2, 3, 4, 5].map((value) => (
@@ -866,7 +1137,7 @@ export function RateOrderDialog({
               fullWidth={false}
             />
             <AppButton
-              label="Send rating"
+              label={submitLabel}
               variant="primary"
               size="sm"
               loading={busy}
@@ -929,6 +1200,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   liveDot: { width: 8, height: 8, borderRadius: 4 },
+  distanceChip: { top: 8, left: 'auto', right: 12, position: 'absolute' },
   card: {
     borderRadius: 20,
     borderWidth: 1,
@@ -972,6 +1244,12 @@ const styles = StyleSheet.create({
   summaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   payMethodRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   refText: { marginTop: spacing.xs },
+  proofWrap: { marginTop: spacing.xs, gap: spacing.xxs },
+  proofImage: {
+    width: '100%',
+    height: 220,
+    borderRadius: radius.image,
+  },
   switchRow: { marginTop: spacing.xs },
   addressRow: {
     flexDirection: 'row',

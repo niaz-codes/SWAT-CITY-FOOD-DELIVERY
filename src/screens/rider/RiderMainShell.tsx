@@ -3,6 +3,7 @@ import { StyleSheet, View } from 'react-native';
 import { TabBar, TabItem } from '../../components/TabBar';
 import { riderFeedApi } from '../../services/api';
 import { RiderHomeScreen } from './RiderHome';
+import { RiderOrderOffer } from './RiderOrderOffer';
 import { RiderRequestsScreen } from './RiderRequests';
 import { RiderEarningsScreen } from './RiderEarnings';
 import { RiderWalletScreen } from './RiderWallet';
@@ -52,6 +53,9 @@ export function RiderMainShellScreen() {
         </View>
       </View>
       <TabBar items={items} activeKey={active} onChange={setActive} />
+      {/* App-level dispatched offer modal: one listener for the whole shell,
+          visible over whichever tab is open. */}
+      <RiderOrderOffer />
     </View>
   );
 }

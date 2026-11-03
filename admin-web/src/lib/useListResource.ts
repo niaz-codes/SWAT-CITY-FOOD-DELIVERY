@@ -62,9 +62,12 @@ export function useListResource<T>(options: ListOptions) {
     params.set('limit', String(limit))
     if (searchParam && debouncedSearch.trim()) params.set(searchParam, debouncedSearch.trim())
     // Every selected filter is a query parameter, whether or not the screen
-    // renders a visible dropdown for it.
+    // renders a visible dropdown for it. `all` means "no filter" (kept for
+    // the dropdowns), while `__all` is an explicit "send the literal
+    // all value" sentinel for endpoints where omitting the parameter and
+    // `all` behave differently (e.g. the verification queue).
     for (const [param, value] of Object.entries(filterValues)) {
-      if (value && value !== 'all') params.set(param, value)
+      if (value && value !== 'all') params.set(param, value === '__all' ? 'all' : value)
     }
     const queryString = params.toString()
 

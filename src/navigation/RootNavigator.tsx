@@ -29,6 +29,7 @@ import { RestaurantScreen } from '../screens/customer/Restaurant';
 import { FoodDetailsScreen } from '../screens/customer/FoodDetails';
 import { CartScreen } from '../screens/customer/Cart';
 import { CheckoutScreen } from '../screens/customer/Checkout';
+import { PaymentProofScreen } from '../screens/customer/PaymentProof';
 import { OrderTrackingScreen } from '../screens/customer/OrderTracking';
 import { LocationPickerScreen } from '../screens/customer/LocationPicker';
 import { RideSearchingScreen } from '../screens/customer/RideSearching';
@@ -240,6 +241,7 @@ export function RootNavigator() {
         options={{ animation: 'slide_from_bottom' }}
       />
       <Stack.Screen name="Checkout" component={CheckoutScreen} />
+      <Stack.Screen name="ManualTransfer" component={PaymentProofScreen} />
       <Stack.Screen name="OrderTracking" component={OrderTrackingScreen} />
 
       <Stack.Screen name="LocationPicker" component={LocationPickerScreen} />

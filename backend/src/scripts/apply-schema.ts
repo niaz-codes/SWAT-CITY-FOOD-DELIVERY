@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   const file = process.argv[2]
     ? resolve(process.cwd(), process.argv[2])
     : resolve(__dirname, '../../supabase/schema.sql');
-  const sql = readFileSync(file, 'utf8');
+  const sql = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
 
   const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(connectionString);
   const client = new Client({
@@ -37,18 +37,28 @@ async function main(): Promise<void> {
 
   await client.connect();
   try {
-    // eslint-disable-next-line no-console
     console.log(`[schema:apply] applying ${file} ...`);
-    await client.query(sql);
-    // eslint-disable-next-line no-console
-    console.log('[schema:apply] schema applied successfully');
+    try {
+      await client.query(sql);
+      console.log('[schema:apply] schema applied successfully');
+    } catch (err) {
+      // Postgres reports the character offset of the failure — print the
+      // offending statement so a drifted schema is diagnosable in one read.
+      const e = err as Error & { position?: string };
+      if (e.position) {
+        const pos = Number(e.position);
+        const start = Math.max(0, pos - 400);
+        const snippet = sql.slice(start, Math.min(sql.length, pos + 120));
+        console.error(`[schema:apply] failed at offset ~${pos}:\n---\n${snippet}\n---`);
+      }
+      throw err;
+    }
   } finally {
     await client.end();
   }
 }
 
 void main().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error('[schema:apply] failed:', (err as Error).message);
   process.exit(1);
 });

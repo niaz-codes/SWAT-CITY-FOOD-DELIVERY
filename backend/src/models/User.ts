@@ -23,6 +23,15 @@ export interface User {
   isApproved: boolean;
   pendingApproval: boolean;
 
+  /**
+   * Referral program. `referralCode` is this user's own share code (unique,
+   * assigned to customers at signup); `referredBy` records the customer whose
+   * code was applied at THIS user's signup. Referral rewards are wallet credits
+   * tied to the referee's first delivered food order.
+   */
+  referralCode?: string | null;
+  referredBy?: string | null;
+
   avatarUrl?: string | null;
   deviceTokens: string[];
 
@@ -45,6 +54,8 @@ export const UserModel = defineModel<User>({
     'verified',
     'isApproved',
     'pendingApproval',
+    'referralCode',
+    'referredBy',
     'avatarUrl',
     'deviceTokens',
     'lastLoginAt',
@@ -54,4 +65,7 @@ export const UserModel = defineModel<User>({
   ],
   hidden: ['password'],
   arrayCols: ['deviceTokens'],
+  refs: {
+    referredBy: () => UserModel,
+  },
 });

@@ -24,6 +24,8 @@ export const registerSchema = z.object({
   vehicleBrand: z.string().trim().max(60).optional(),
   vehiclePlate: z.string().trim().max(20).optional(),
   cnic: z.string().trim().max(25).optional(),
+  /** A friend's referral code typed at signup. Validated/ignored server-side. */
+  referralCode: z.string().trim().max(10).optional(),
 });
 
 /**

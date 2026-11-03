@@ -766,3 +766,424 @@ values ('swat-city', 'swat-city', true)
 on conflict (id) do nothing;
 
 commit;
+
+-- ===========================================================================
+-- DIRECT BANK / WALLET TRANSFER PAYMENTS (admin-verified)
+-- "Direct Bank Transfer (UBL)" + manual Easypaisa/JazzCash transfer options.
+-- The customer moves the money themselves into the company account, submits
+-- the transaction reference + a receipt screenshot, and an authorised admin
+-- compares it with the real bank statement before anything is marked `paid`.
+-- There is NO bank API and NO automatic verification — these migrations only
+-- widen the stored enums and add the audit trail.
+-- ===========================================================================
+
+begin;
+
+-- orders.paymentMethod + payments.method: admit the direct-transfer methods.
+-- The *_transfer names keep manual wallet transfers apart from the LIVE
+-- easypaisa/jazzcash gateway rows (same stored enum, different workflow).
+do $$
+declare c text;
+begin
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.orders'::regclass and contype = 'c'
+      and pg_get_constraintdef(oid) ilike '%paymentmethod%'
+  loop
+    execute format('alter table public.orders drop constraint %I', c);
+  end loop;
+end $$;
+alter table public.orders
+  add check (paymentMethod in ('cash','card','wallet','easypaisa','jazzcash','demo','ubl','easypaisa_transfer','jazzcash_transfer'));
+
+do $$
+declare c text;
+begin
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.payments'::regclass and contype = 'c'
+      and pg_get_constraintdef(oid) ilike '%method%'
+  loop
+    execute format('alter table public.payments drop constraint %I', c);
+  end loop;
+end $$;
+alter table public.payments
+  add check (method in ('easypaisa','jazzcash','cash','card','wallet','demo','ubl','easypaisa_transfer','jazzcash_transfer'));
+
+-- Payment status: `pending_verification` (proof submitted, admin checking) and
+-- `rejected` (admin compared with the statement and it did not match) are the
+-- manual-transfer lifecycle states. Only `paid` ever means money arrived —
+-- and only an admin decision, never a customer upload, sets it.
+--
+-- NOTE: Postgres renders IN-checks as `CHECK (col = ANY(ARRAY[...]))`, so the
+-- patterns below match the column name itself, never an "IN" spelling.
+do $$
+declare c text;
+begin
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.payments'::regclass and contype = 'c'
+      and pg_get_constraintdef(oid) ilike '%status%'
+  loop
+    execute format('alter table public.payments drop constraint %I', c);
+  end loop;
+end $$;
+alter table public.payments
+  add check (status in ('pending','processing','paid','failed','cancelled','refunded','pending_verification','rejected'));
+
+do $$
+declare c text;
+begin
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.orders'::regclass and contype = 'c'
+      and pg_get_constraintdef(oid) ilike '%paymentstatus%'
+  loop
+    execute format('alter table public.orders drop constraint %I', c);
+  end loop;
+end $$;
+alter table public.orders
+  add check (paymentStatus in ('pending','processing','paid','failed','cancelled','refunded','pending_verification','rejected'));
+
+-- ---------------------------------------------------------------------------
+-- payment_verifications: append-only audit log for the transfer workflow.
+--   receipt_submitted  customer submitted reference + receipt (attempt N)
+--   approve            admin confirmed against the bank statement → payment `paid`
+--   reject             admin refused, reason stored → customer may resubmit
+--   request_info       admin needs a clearer receipt / more details
+-- Admin id, timestamp, decision and reason are part of the record; rows are
+-- never updated or deleted by the application. RLS is enabled with zero
+-- policies, matching every other table: only the backend's service role reads
+-- or writes it.
+-- ---------------------------------------------------------------------------
+create table if not exists public.payment_verifications (
+  _id            uuid primary key default gen_random_uuid(),
+  payment        uuid not null,
+  "order"        uuid,
+  actor          uuid not null,
+  actorRole      text not null check (actorRole in ('customer','admin','system')),
+  decision       text not null check (decision in ('receipt_submitted','approve','reject','request_info')),
+  reason         text,
+  amount         double precision,
+  transactionRef text,
+  createdAt      timestamptz not null default now()
+);
+create index if not exists payment_verifications_payment_idx
+  on public.payment_verifications (payment, createdat asc);
+create index if not exists payment_verifications_order_idx
+  on public.payment_verifications ("order", createdat desc);
+create index if not exists payment_verifications_actor_idx
+  on public.payment_verifications (actor, createdat desc);
+
+-- Admin verification queue: manual payments by workflow stage.
+create index if not exists payments_manual_gateway_status_idx
+  on public.payments (gateway, status, updatedat desc)
+  where gateway = 'manual';
+create index if not exists payments_manual_method_created_idx
+  on public.payments (method, createdat desc)
+  where gateway = 'manual';
+
+-- PRIVATE storage bucket for payment receipt screenshots. No public URL and
+-- (by default) no public policy: every read is arbitrated by the backend and
+-- minted as a short-lived signed URL, and a customer can only reach receipts
+-- of their own orders through the API.
+insert into storage.buckets (id, name, public)
+values ('payment-receipts', 'payment-receipts', false)
+on conflict (id) do update set public = false;
+
+commit;
+
+-- ---------------------------------------------------------------------------
+-- ENGAGEMENT SUITE  (chat · referrals · loyalty · scheduled orders ·
+--                    review replies · prep time · analytics)
+-- ---------------------------------------------------------------------------
+-- Additive, idempotent migration. Same conventions as the rest of the file:
+-- camelCase quoted identifiers, no FKs, RLS enabled with zero policies, and
+-- CHECK constraints only widened via drop + re-add inside the same block.
+-- ---------------------------------------------------------------------------
+begin;
+
+-- 1) Per-order chat threads (customer ↔ rider ↔ restaurant owner).
+--    A thread is rooted on an ORDER; recipient/participation rules live in the
+--    backend chat service, never in SQL, so no cross-participant CHECKs here.
+create table if not exists public.chat_messages (
+  _id          uuid primary key default gen_random_uuid(),
+  "order"      uuid not null,
+  ride         uuid,
+  sender       uuid not null,
+  "senderRole" text not null check ("senderRole" in ('customer','rider','restaurant')),
+  recipient    uuid not null,
+  "body"       text not null,
+  "readAt"     timestamptz,
+  "deletedAt"  timestamptz,
+  createdAt    timestamptz not null default now(),
+  updatedAt    timestamptz not null default now(),
+  constraint chat_messages_body_not_blank check (length(btrim("body")) > 0),
+  constraint chat_messages_body_len check (length("body") <= 1000)
+);
+alter table public.chat_messages enable row level security;
+create index if not exists chat_messages_order_created_idx
+  on public.chat_messages ("order", createdat asc);
+-- Unread triage: quick "any new messages?" lookups per user.
+create index if not exists chat_messages_recipient_unread_idx
+  on public.chat_messages (recipient, createdat desc)
+  where "readAt" is null and "deletedAt" is null;
+
+-- 2) Referral program on users (customers only participate; rider/restaurant
+--    columns stay null). The code is unique to its owner.
+alter table public.users add column if not exists "referralCode" text;
+alter table public.users add column if not exists "referredBy" uuid;
+create unique index if not exists users_referral_code_uq
+  on public.users ("referralCode")
+  where "referralCode" is not null;
+create index if not exists users_referred_by_idx
+  on public.users ("referredBy")
+  where "referredBy" is not null;
+
+-- 3) Loyalty points balance on the customer profile (integer points; the Rs
+--    value of one point and the earn rate live in app_settings).
+alter table public.customer_profiles add column if not exists "loyaltyPoints" integer not null default 0;
+
+-- 4) Scheduled food delivery + persisted tip + loyalty ledger fields on orders.
+alter table public.orders add column if not exists "scheduledFor" timestamptz;
+alter table public.orders add column if not exists "tip" double precision not null default 0;
+alter table public.orders add column if not exists "loyaltyPointsRedeemed" integer not null default 0;
+alter table public.orders add column if not exists "loyaltyDiscount" double precision not null default 0;
+alter table public.orders add column if not exists "loyaltyPointsEarned" integer not null default 0;
+create index if not exists orders_scheduled_idx
+  on public.orders ("scheduledFor")
+  where "scheduledFor" is not null and status in ('pending','confirmed','preparing','ready');
+
+-- 5) Restaurant replies to reviews (one reply per review, set via the portal).
+alter table public.reviews add column if not exists "reply" text;
+alter table public.reviews add column if not exists "repliedAt" timestamptz;
+alter table public.reviews add column if not exists "repliedBy" uuid;
+do $$
+begin
+  if exists (select 1 from pg_constraint where conrelid = 'public.reviews'::regclass
+              and conname = 'reviews_reply_len') then
+    alter table public.reviews drop constraint reviews_reply_len;
+  end if;
+  alter table public.reviews add constraint reviews_reply_len
+    check (length("reply") is null or length("reply") <= 500);
+end $$;
+
+-- 6) Restaurant-level prep window override (minutes in kitchen; the customer-
+--    visible estimate becomes prepTimeMin + travel when set).
+alter table public.restaurants add column if not exists "prepTimeMin" integer;
+do $$
+begin
+  if exists (select 1 from pg_constraint where conrelid = 'public.restaurants'::regclass
+              and conname = 'restaurants_prep_time_min_range') then
+    alter table public.restaurants drop constraint restaurants_prep_time_min_range;
+  end if;
+  alter table public.restaurants add constraint restaurants_prep_time_min_range
+    check ("prepTimeMin" is null or ("prepTimeMin" > 0 and "prepTimeMin" <= 240));
+end $$;
+
+-- 7) New chat event for push routing: widen the notification event CHECK.
+do $$
+begin
+  if exists (select 1 from pg_constraint where conrelid = 'public.notifications'::regclass
+              and conname = 'notifications_event_check') then
+    alter table public.notifications drop constraint notifications_event_check;
+  end if;
+  alter table public.notifications add constraint notifications_event_check
+    check (event in ('order_placed','order_accepted','order_rejected','order_preparing',
+                     'order_ready','rider_assigned','rider_picked_up','rider_on_the_way',
+                     'order_delivered','order_cancelled','ride_requested','ride_accepted',
+                     'ride_arrived','ride_completed','ride_cancelled','payment_settled',
+                     'announcement','chat_message'));
+end $$;
+
+-- 8) New admin-editable settings (defaults only — never overwrite admin edits).
+insert into public.app_settings (key, value, label)
+values
+  ('loyalty_points_per_hundred', '5',  'Loyalty points earned per Rs 100 spent'),
+  ('loyalty_point_value',        '1',  'Rs discount per loyalty point'),
+  ('loyalty_max_percent',        '30', 'Max % of subtotal payable with points'),
+  ('referral_reward',            '100','Referral reward (Rs) for referrer + referee'),
+  ('rider_weekly_target',        '6000','Rider weekly payout target (Rs)')
+on conflict (key) do nothing;
+
+-- Wildcard: appearance of new keys in a live schema never blocks a re-run.
+commit;
+
+-- ---------------------------------------------------------------------------
+-- RIDER DISPATCH + AUCTION-SAFE ORDER CLAIM (v2: auto-assignment)
+-- ---------------------------------------------------------------------------
+-- Additive, idempotent migration. Same conventions as the rest of the file.
+--
+-- Why: the app-wide data layer talks to PostgREST one row at a time, so a
+-- plain "read order -> check rider is null -> save" acceptance is NOT atomic:
+-- two riders tapping Accept at the same millisecond would both pass the read
+-- check and both save, double-assigning the delivery. The claim therefore
+-- happens inside a single Postgres statement in this function, called by the
+-- backend with the service-role key. Two concurrent claims lock on the same
+-- row; the second re-evaluates the WHERE clause after the first commits and
+-- claims nothing.
+-- ---------------------------------------------------------------------------
+begin;
+
+-- 1) Dispatch bookkeeping columns (what the auto-offer sweeper needs).
+--    NOTE: identifiers are written lowercase on purpose. Unquoted identifiers
+--    fold to lowercase in Postgres, and the backend data layer lowercases every
+--    column name it sends — the quoted camelCase variants above would create a
+--    parallel column nobody reads.
+alter table public.orders add column if not exists dispatchstartedat timestamptz;
+alter table public.orders add column if not exists dispatchlastofferat timestamptz;
+alter table public.orders add column if not exists dispatchattempts integer not null default 0;
+alter table public.orders add column if not exists dispatchlastadminalertat timestamptz;
+
+-- Pool query shape: unclaimed, ready-for-pickup orders.
+create index if not exists orders_dispatch_pool_idx
+  on public.orders (createdat asc)
+  where status = 'ready' and rider is null and deletedat is null;
+
+-- 2) Widen the payment CHECKs to the manual-transfer lifecycle values that
+--    the backend models (and live data) already use. Live constraint names are
+--    lowercase folds of the originals (see the probe note above).
+do $$
+begin
+  if exists (select 1 from pg_constraint where conrelid = 'public.orders'::regclass
+              and conname = 'orders_paymentstatus_check') then
+    alter table public.orders drop constraint orders_paymentstatus_check;
+  end if;
+  alter table public.orders add constraint orders_paymentstatus_check
+    check (paymentstatus in ('pending','processing','paid','failed','cancelled',
+                             'refunded','pending_verification','rejected'));
+end $$;
+
+do $$
+begin
+  if exists (select 1 from pg_constraint where conrelid = 'public.orders'::regclass
+              and conname = 'orders_paymentmethod_check') then
+    alter table public.orders drop constraint orders_paymentmethod_check;
+  end if;
+  alter table public.orders add constraint orders_paymentmethod_check
+    check (paymentmethod in ('cash','card','wallet','easypaisa','jazzcash','demo',
+                             'ubl','easypaisa_transfer','jazzcash_transfer'));
+end $$;
+
+-- 3) The atomic single-statement claim. Result values instead of exceptions so
+--    the caller branches on a shape, never on parsed Postgres error codes.
+create or replace function public.accept_rider_order(p_order uuid, p_rider uuid)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = public
+as $func$
+declare
+  claimed uuid;
+begin
+  -- A pending / rejected rider can never take a job.
+  if not exists (
+    select 1 from public.rider_profiles rp
+    where rp."user" = p_rider and rp.approvalstatus = 'approved'
+  ) then
+    return jsonb_build_object('result', 'rider_not_approved');
+  end if;
+
+  -- One active delivery at a time: an active food order or an in-progress
+  -- ride blocks a second claim.
+  if exists (
+    select 1 from public.orders
+    where rider = p_rider and status in ('rider_assigned','picked_up','on_the_way')
+  ) then
+    return jsonb_build_object('result', 'rider_busy');
+  end if;
+  if exists (
+    select 1 from public.rides
+    where rider = p_rider and status in ('accepted','arriving','started')
+  ) then
+    return jsonb_build_object('result', 'rider_busy');
+  end if;
+
+  -- THE claim. Payment eligibility is enforced here too: a manual-transfer
+  -- order whose screenshot has not been admin-approved to paid can never be
+  -- assigned to a rider, no matter what any client is doing.
+  update public.orders o
+     set rider = p_rider,
+         status = 'rider_assigned',
+         riderpayout = round((o.deliveryfee + o.platformfee) * 0.75),
+         statushistory = coalesce(o.statushistory, '[]'::jsonb)
+                         || jsonb_build_object(
+                              'status', 'rider_assigned',
+                              'at', now(),
+                              'note', 'Rider accepted the delivery offer'
+                            ),
+         updatedat = now()
+   where o._id = p_order
+     and o.rider is null
+     and o.status = 'ready'
+     and o.deletedat is null
+     -- THE payment gate (third layer): 'pending' is only legitimate for
+     -- cash-on-delivery; every manual/gateway transfer must be admin-verified
+     -- to 'paid' before a rider can ever be assigned.
+     and ( o.paymentstatus = 'paid'
+           or (o.paymentstatus = 'pending' and o.paymentmethod = 'cash') )
+  returning o._id into claimed;
+
+  if claimed is null then
+    return jsonb_build_object('result', 'order_unavailable');
+  end if;
+
+  -- Mark the rider "On Delivery" for the duration of this leg. Location
+  -- sharing still runs in busy state, and the backend idle-revert sets online
+  -- again when the last job ends.
+  update public.rider_profiles
+     set status = 'busy', updatedat = now()
+   where "user" = p_rider and status = 'online';
+
+  return jsonb_build_object('result', 'accepted', 'orderId', claimed);
+end
+$func$;
+
+-- This function performs WRITE work; only the service-role key may call it
+-- over the REST surface. Anon/authenticated tokens get nothing even if a key
+-- is ever leaked by accident.
+revoke all on function public.accept_rider_order(uuid, uuid) from public;
+revoke all on function public.accept_rider_order(uuid, uuid) from anon;
+revoke all on function public.accept_rider_order(uuid, uuid) from authenticated;
+grant execute on function public.accept_rider_order(uuid, uuid) to service_role;
+
+commit;
+
+-- ---------------------------------------------------------------------------
+-- ADMIN AUDIT TRAIL (append-only log for admin trust/money actions not already
+-- audited in payment_verifications or withdrawal.metadata)
+--   rider_approve / rider_reject / rider_suspend / rider_activate
+--   rider_vehicle_plate / rider_vehicle_decision
+--   order_cancel (admin-initiated; records the refund outcome on the order)
+--   user_status
+-- Identifiers are lowercase on purpose: the backend data layer lowercases every
+-- column name it sends (unquoted DDL folds to lowercase anyway). Rows are never
+-- updated or deleted by the application. RLS with zero policies: only the
+-- backend's service role touches this table.
+-- ---------------------------------------------------------------------------
+begin;
+
+create table if not exists public.admin_audit (
+  _id        uuid primary key default gen_random_uuid(),
+  admin      uuid not null,
+  action     text not null check (action in
+               ('rider_approve','rider_reject','rider_suspend','rider_activate',
+                'rider_vehicle_plate','rider_vehicle_decision',
+                'order_cancel','order_status_override','user_status')),
+  targettype text not null,
+  targetid   text not null,
+  detail     text,
+  createdat  timestamptz not null default now()
+);
+
+alter table public.admin_audit enable row level security;
+
+create index if not exists admin_audit_admin_idx
+  on public.admin_audit (admin, createdat desc);
+create index if not exists admin_audit_target_idx
+  on public.admin_audit (targettype, targetid, createdat desc);
+create index if not exists admin_audit_action_idx
+  on public.admin_audit (action, createdat desc);
+
+commit;

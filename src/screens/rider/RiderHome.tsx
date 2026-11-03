@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,6 +14,7 @@ import { Divider } from '../../components/Divider';
 import { EmptyState } from '../../components/EmptyState';
 import { riderFeedApi, jobApi } from '../../services/api';
 import { riderApi as liveRiderApi } from '../../services/riderApi';
+import { onSocketEvent } from '../../services/socket';
 import { useRiderLocation } from '../../state/RiderLocationProvider';
 import { useToast } from '../../state/ToastProvider';
 import { apiErrorMessage } from '../../services/client';
@@ -66,6 +67,35 @@ export function RiderHomeScreen({
   const earnings = useAsyncData(() => riderFeedApi.getEarnings(), []);
   const feed = useAsyncData(() => riderFeedApi.getFeed(), []);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
+
+  // Live dispatch: the backend offers orders over `order:request` the moment
+  // they are ready (and tells everyone when an order leaves the pool), so the
+  // feed reacts instantly instead of waiting for the poll.
+  useEffect(() => {
+    let lastRefetch = 0;
+    const refresh = () => {
+      // Collapse bursts: a round broadcasts one event per rider anyway, but
+      // resolved + offer can land together — 3s debounce is plenty.
+      if (Date.now() - lastRefetch < 3000) return;
+      lastRefetch = Date.now();
+      void feed.refetch();
+    };
+    const unsubs: (() => void)[] = [];
+    void onSocketEvent('order:request', refresh).then((fn) => unsubs.push(fn));
+    void onSocketEvent('order:request:resolved', refresh).then((fn) => unsubs.push(fn));
+    return () => unsubs.forEach((fn) => fn?.());
+    // feed object identity is stable in useAsyncData; refetch is a stable callback
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Safety net for riders who keep the screen open: refresh the pool even if
+  // the socket hiccups (only while online/dispatchable).
+  useEffect(() => {
+    if (!online) return;
+    const id = setInterval(() => void feed.refetch(), 15_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [online]);
 
   /** Accepts a food order from the pickup pool and opens its delivery leg. */
   const acceptJob = async (item: DeliveryFeedItem) => {

@@ -7,6 +7,7 @@ import {
   riderCancelledJobs,
   riderEarnings,
   riderFeed,
+  riderLeaderboard,
   riderJobs,
   setBaseLocation,
   setOnlineStatus,
@@ -49,5 +50,6 @@ router.post('/jobs/accept', validate(acceptDeliverySchema), acceptOrderJob);
 router.post('/jobs/delivery', validate(completeDeliveryStatusSchema), updateDelivery);
 
 router.get('/earnings', riderEarnings);
+router.get('/leaderboard', riderLeaderboard);
 
 export default router;

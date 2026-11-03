@@ -19,13 +19,32 @@ import {
   type PaymentStatus,
 } from '../models';
 import { notifyUser } from './notification.service';
-import { creditWallet, debitWallet, getOrCreateWallet } from './wallet.service';
+import { creditWallet, getOrCreateWallet } from './wallet.service';
 import { assertRiderApproved } from './riderApproval.service';
+import {
+  claimRiderOrder,
+  dispatchOrder,
+  paymentEligible,
+  revertRiderStatusIfIdle,
+  stopDispatchForOrder,
+} from './dispatch.service';
 import { getIO, isSocketReady, SOCKET_EVENTS } from '../sockets';
-import { AppError, BAD_REQUEST, CONFLICT, NOT_FOUND } from '../utils/AppError';
-import { humanId } from '../utils/tokens';
+import { AppError, CONFLICT, NOT_FOUND } from '../utils/AppError';
+import { haversineKm, humanId } from '../utils/tokens';
 import { getSetting } from './settings.service';
+import {
+  assertRedeemable,
+  awardLoyaltyPoints,
+  debitLoyaltyPoints,
+  getLoyaltyConfig,
+  pointsDiscountFor,
+  loyaltyBalanceFor,
+  refundLoyaltyPoints,
+  scheduledForError,
+} from './loyalty.service';
+import { awardReferralOnDelivered } from './referral.service';
 import { canAssignRider } from '../utils/orderPolicy';
+import { isManualTransferMethod, manualChannelForMethod } from '../models';
 
 /** Allowed forward transitions of the order lifecycle (spec-defined). */
 export const ORDER_FLOW: Record<OrderStatus, OrderStatus[]> = {
@@ -221,11 +240,27 @@ type PaymentDoc = Doc<Payment>;
  */
 export async function computeOrderTotals(
   customerId: string,
-  options: { promoCode?: string; tip?: number } = {},
+  options: { promoCode?: string; tip?: number; redeemPoints?: number } = {},
 ) {
   const { cart, restaurant, items, subtotal } = await buildCartWithPricing(customerId);
 
   const discount = await computePromoDiscount(options.promoCode, subtotal, customerId);
+
+  // Loyalty redemption: quoted against the caller's REAL balance, then capped
+  // by the settings (Rs/point, max % of subtotal). The authoritative debit is
+  // a compare-and-set in placeOrder, so an overdraw between quote and purchase
+  // still fails safely.
+  const loyaltyConfig = await getLoyaltyConfig();
+  const balance =
+    options.redeemPoints && options.redeemPoints > 0
+      ? await loyaltyBalanceFor(customerId)
+      : 0;
+  const { points: loyaltyPointsRedeemed, discount: loyaltyDiscount } = pointsDiscountFor(
+    Math.min(options.redeemPoints ?? 0, balance),
+    subtotal,
+    loyaltyConfig,
+  );
+
   const baseDeliveryFee = restaurant.freeDelivery ? 0 : (restaurant.deliveryFee ?? 0);
   const deliveryFee =
     restaurant.freeDelivery && subtotal >= FREE_DELIVERY_THRESHOLD ? 0 : baseDeliveryFee;
@@ -234,7 +269,8 @@ export async function computeOrderTotals(
   // Guard here as well as at the route: `computeOrderTotals` is reachable from
   // several callers, and a NaN total would be persisted as a "valid" order.
   const tip = Math.max(0, Number.isFinite(options.tip) ? (options.tip as number) : 0);
-  const total = subtotal + deliveryFee + platformFee - discount + tip;
+  const total =
+    subtotal + deliveryFee + platformFee - discount - loyaltyDiscount + tip;
   if (!Number.isFinite(total) || total <= 0) {
     throw new AppError('Order total must be a positive amount', 400);
   }
@@ -248,9 +284,11 @@ export async function computeOrderTotals(
     discount,
     platformFee,
     tip,
+    loyaltyPointsRedeemed,
+    loyaltyDiscount,
     total,
     distanceKm: restaurant.deliveryKM ?? 0,
-    estimatedMinutes: restaurant.deliveryTimeMin ?? 30,
+    estimatedMinutes: restaurant.prepTimeMin ?? restaurant.deliveryTimeMin ?? 30,
   };
 }
 
@@ -289,42 +327,6 @@ export async function notifyAdminsNewOrder(order: OrderDoc): Promise<void> {
     );
   } catch {
     // Admin alerting is best-effort.
-  }
-}
-
-/**
- * Push a newly-ready order to every approved rider who is currently online.
- * Riders whose accounts are pending/rejected, or who are offline, are skipped.
- */
-async function notifyAvailableRiders(order: OrderDoc, restaurantName: string): Promise<void> {
-  try {
-    const riders = await RiderProfileModel.find({
-      approvalStatus: 'approved',
-      isOnline: true,
-      status: 'online',
-    })
-      .select('user')
-      .lean();
-    if (riders.length === 0) return;
-
-    await Promise.all(
-      riders.map((rider) =>
-        notifyUser(String(rider.user), {
-          type: 'order',
-          event: 'order_ready',
-          refId: String(order._id),
-          title: 'New delivery available',
-          body: `Order ${order.orderNumber} at ${restaurantName} is ready to collect.`,
-          data: {
-            orderId: String(order._id),
-            orderNumber: order.orderNumber,
-            status: order.status,
-          },
-        }).catch(() => undefined),
-      ),
-    );
-  } catch {
-    // Rider alerting is best-effort; the socket feed still announces the job.
   }
 }
 
@@ -384,8 +386,22 @@ export async function placeOrder(input: {
   tip?: number;
   note?: string;
   idempotencyKey?: string;
+  /** Loyalty redemption requested at checkout (see loyalty.service). */
+  redeemPoints?: number;
+  /** Scheduled delivery slot (ISO string; validated against lead/window). */
+  scheduledFor?: string | null;
 }): Promise<{ order: OrderDoc; payment: PaymentDoc }> {
   const idempotencyKey = input.idempotencyKey?.trim() || undefined;
+
+  // Scheduled delivery validation happens up-front: rejecting an impossible
+  // slot must never burn an idempotency lock or debit any points.
+  let scheduledAt: Date | null = null;
+  if (input.scheduledFor) {
+    const parsed = new Date(input.scheduledFor);
+    const scheduleError = scheduledForError(parsed);
+    if (scheduleError) throw new AppError(scheduleError, 422);
+    scheduledAt = parsed;
+  }
 
   // Fast replay: this attempt already completed (or is completing).
   let reusablePayment: PaymentDoc | null = null;
@@ -412,8 +428,28 @@ export async function placeOrder(input: {
   const totals = await computeOrderTotals(input.customerId, {
     promoCode: input.promoCode,
     tip: input.tip,
+    redeemPoints: input.redeemPoints,
   });
-  const { cart, restaurant, items, subtotal, deliveryFee, discount, platformFee, total } = totals;
+  const {
+    cart,
+    restaurant,
+    items,
+    subtotal,
+    deliveryFee,
+    discount,
+    platformFee,
+    total,
+    loyaltyPointsRedeemed,
+    loyaltyDiscount,
+  } = totals;
+
+  // A balance check + CAS debit before anything else moves: two concurrent
+  // checkouts cannot both spend the same points, and an overdraw can never
+  // survive into an order.
+  if (loyaltyPointsRedeemed > 0) {
+    await assertRedeemable(input.customerId, loyaltyPointsRedeemed);
+    await debitLoyaltyPoints(input.customerId, loyaltyPointsRedeemed);
+  }
 
   const address = await AddressModel.findOne({
     _id: input.addressId,
@@ -438,7 +474,9 @@ export async function placeOrder(input: {
     payment = reusablePayment;
   } else {
     try {
-      // Written BEFORE the wallet debit: this row is the idempotency lock.
+      // Written BEFORE anything else: this row is the idempotency lock.
+      // Direct transfers are not a gateway: `manual` keeps the row out of the
+      // gateway verify paths — only an admin decision may settle it.
       payment = await PaymentModel.create({
         user: input.customerId,
         kind: 'order',
@@ -446,8 +484,8 @@ export async function placeOrder(input: {
         status: initialPaymentStatus,
         amount: total,
         currency: 'PKR',
-        gateway: method === 'cash' ? 'cash' : method,
-        initiatedAt: method === 'cash' ? null : new Date(),
+        gateway: 'manual',
+        initiatedAt: null,
         idempotencyKey: idempotencyKey ?? null,
       });
     } catch (error) {
@@ -466,33 +504,9 @@ export async function placeOrder(input: {
     }
   }
 
-  // Wallet is debited immediately and settled up-front. Every other method
-  // records an intent only; the money moves later (or never, for COD).
-  if (method === 'wallet') {
-    try {
-      const wallet = await debitWallet(input.customerId, total, 'debit', {
-        reference: 'order',
-        description: `Payment for order at ${restaurant.name}`,
-        byUser: input.customerId,
-      });
-      const paidAt = new Date();
-      const metadata = { walletTransaction: String(wallet.transaction._id) };
-      await PaymentModel.updateOne(
-        { _id: payment._id },
-        { $set: { status: 'paid', paidAt, metadata } },
-      );
-      payment.status = 'paid';
-      payment.paidAt = paidAt;
-      payment.metadata = metadata;
-      paymentStatus = 'paid';
-    } catch (error) {
-      // No money moved when the debit throws (e.g. insufficient balance), so
-      // release the lock and let the customer retry with a fresh key.
-      await PaymentModel.deleteOne({ _id: payment._id }).catch(() => undefined);
-      throw error;
-    }
-  }
-
+  // No up-front debit happens for a direct transfer: the money moves by hand,
+  // the payment stays `pending` (an admin later flips it to `paid`), and the
+  // order stays `pending` until the verification completes.
   try {
     return await finaliseOrder({
       input,
@@ -508,25 +522,19 @@ export async function placeOrder(input: {
       payment,
       paymentStatus,
       method,
+      scheduledFor: scheduledAt,
+      loyaltyPointsRedeemed,
+      loyaltyDiscount,
     });
   } catch (error) {
     // Order creation failed after the payment row was written.
-    if (method === 'wallet' && paymentStatus === 'paid') {
-      // Give the debited money back; the order does not exist, so there is
-      // nothing else to reconcile.
-      await creditWallet(input.customerId, total, 'refund', {
-        reference: 'order',
-        description: `Refund for failed checkout ${payment._id}`,
-        byUser: input.customerId,
-      }).catch(() => undefined);
-      await PaymentModel.updateOne(
-        { _id: payment._id },
-        { $set: { status: 'refunded', refundedAt: new Date() } },
-      ).catch(() => undefined);
-    } else {
-      // Nothing was charged: drop the lock so a retry can proceed.
-      await PaymentModel.deleteOne({ _id: payment._id }).catch(() => undefined);
+    if (loyaltyPointsRedeemed > 0) {
+      // Points were consumed for an order that does not exist — give them back
+      // so a retry does not spend them twice.
+      await refundLoyaltyPoints(input.customerId, loyaltyPointsRedeemed).catch(() => undefined);
     }
+    // Nothing was charged: drop the lock so a retry can proceed.
+    await PaymentModel.deleteOne({ _id: payment._id }).catch(() => undefined);
     throw error;
   }
 }
@@ -566,6 +574,9 @@ async function finaliseOrder(args: {
   payment: PaymentDoc;
   paymentStatus: PaymentStatus;
   method: OrderCheckoutMethod;
+  scheduledFor: Date | null;
+  loyaltyPointsRedeemed: number;
+  loyaltyDiscount: number;
 }): Promise<{ order: OrderDoc; payment: PaymentDoc }> {
   const {
     input,
@@ -603,7 +614,11 @@ async function finaliseOrder(args: {
     paymentMethod: args.method,
     paymentStatus: args.paymentStatus,
     payment: args.payment._id,
-    paymentGateway: args.method === 'cash' || args.method === 'wallet' ? undefined : args.method,
+    scheduledFor: args.scheduledFor,
+    tip: args.totals.tip,
+    loyaltyPointsRedeemed: args.loyaltyPointsRedeemed,
+    loyaltyDiscount: args.loyaltyDiscount,
+    paymentGateway: 'manual',
     riderPayout: Math.round((deliveryFee + platformFee) * RIDER_PAYOUT_RATE),
     note: input.note,
   });
@@ -630,42 +645,31 @@ async function finaliseOrder(args: {
   totals.cart.restaurant = undefined;
   await totals.cart.save();
 
-  // COD and wallet are actionable immediately. Gateway orders wait for the
-  // verified payment so the kitchen is never told about an unpaid order.
-  if (args.method === 'cash' || args.method === 'wallet') {
-    // Notification failure must never turn a created order into a checkout
-    // error (which would release the idempotency lock while the order exists).
-    await notifyUser(input.customerId, {
-      type: 'order',
-      event: 'order_placed',
-      refId: String(order._id),
-      title: ORDER_STATUS_COPY.pending.title,
-      body: ORDER_STATUS_COPY.pending.body(order.orderNumber, restaurant.name),
-      data: { orderId: String(order._id), orderNumber: order.orderNumber, status: order.status },
-    }).catch(() => undefined);
-
-    // Live queue for the admin dashboard + persisted admin alert.
-    if (isSocketReady()) {
-      getIO()
-        .to('role:admin')
-        .emit(SOCKET_EVENTS.orderCreated, {
-          orderId: String(order._id),
-          orderNumber: order.orderNumber,
-          status: order.status,
-          total: order.total,
-          restaurant: restaurant.name,
-        });
-    }
-    await notifyAdminsNewOrder(order);
-
-    // And the restaurant owner (portal) gets the same alert.
-    await notifyRestaurantOwner(
-      order,
-      'order_placed',
-      'New order received',
-      `Order ${order.orderNumber} for Rs ${order.total} is waiting for you to accept.`,
-    ).catch(() => undefined);
-  }
+  // Direct bank/wallet transfer: tell the customer to move the money and
+  // submit proof. NO admin/restaurant alert and no kitchen action yet — the
+  // order stays unconfirmed until an admin verifies the transfer, and the
+  // payment-proof submission (not this message) opens the verification queue.
+  const channel = manualChannelForMethod(args.method) ?? 'ubl';
+  const destination =
+    channel === 'ubl'
+      ? 'the UBL account shown on the next screen'
+      : channel === 'easypaisa'
+        ? 'the Easypaisa account shown on the next screen'
+        : 'the JazzCash account shown on the next screen';
+  await notifyUser(input.customerId, {
+    type: 'order',
+    event: 'order_placed',
+    refId: String(order._id),
+    title: 'Transfer the order amount now',
+    body: `Order ${order.orderNumber}: send Rs ${order.total} to ${destination}, then submit the transaction ID + receipt screenshot. The order is confirmed only after admin verification of the transfer.`,
+    data: {
+      orderId: String(order._id),
+      orderNumber: order.orderNumber,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      transferChannel: channel,
+    },
+  }).catch(() => undefined);
 
   return { order, payment: args.payment };
 }
@@ -693,6 +697,21 @@ export async function advanceOrderStatus(
   const from = order.status;
   if (!canTransition(from, to)) {
     throw CONFLICT(transitionError(from, to));
+  }
+
+  // THE payment gate on confirmation. Checkout is never "complete" the moment
+  // an order is created — the kitchen may not be told about money that has not
+  // actually moved. A manual-transfer order whose proof is still
+  // `pending_verification` (or was rejected by an admin) cannot be confirmed;
+  // the moment a verified admin approves the payment, this gate re-opens by
+  // itself. Cash on delivery is the exception by design: it settles at the
+  // door, so `pending` + `cash` is a legitimately confirmable state.
+  if (to === 'confirmed' && !paymentEligible(order)) {
+    throw CONFLICT(
+      isManualTransferMethod(order.paymentMethod)
+        ? 'This order cannot be confirmed until its payment is approved. Verify the transfer receipt first.'
+        : 'This order cannot be confirmed until its payment shows as paid.',
+    );
   }
 
   // Compare-and-set on the status: of two concurrent requests (double-tap,
@@ -731,20 +750,55 @@ export async function advanceOrderStatus(
   if (to === 'ready' && !updated.rider) {
     io.to('role:rider').emit(SOCKET_EVENTS.orderStatus, statusPayload);
   }
-
   // Customer gets a routed push for every lifecycle step, not just delivery.
   const restaurantName = String(
     (await RestaurantModel.findById(updated.restaurant).select('name').lean())?.name ??
       'the restaurant',
   );
   const copy = ORDER_STATUS_COPY[to];
+
+  // ETA push (single, never per GPS tick): the moment the rider turns
+  // `on_the_way` their last known position → the delivery address is a
+  // meaningful estimate. Computed once from the throttled rider-profile fix,
+  // appended to the status push — no extra notification is created.
+  let etaSuffix = '';
+  if (to === 'on_the_way' && updated.rider) {
+    try {
+      const profile = await RiderProfileModel.findOne({ user: String(updated.rider) })
+        .select('lastLocation')
+        .lean();
+      const from = profile?.lastLocation?.lat != null && profile?.lastLocation?.lng != null
+        ? { lat: profile.lastLocation.lat as number, lng: profile.lastLocation.lng as number }
+        : null;
+      const dest =
+        updated.addressSnapshot?.lat != null && updated.addressSnapshot?.lng != null
+          ? {
+              lat: updated.addressSnapshot.lat as number,
+              lng: updated.addressSnapshot.lng as number,
+            }
+          : null;
+      if (from && dest) {
+        const km = haversineKm(from, dest);
+        const minutes = Math.max(1, Math.round((km / 22) * 60));
+        etaSuffix = ` Arriving in about ${minutes} min (${km.toFixed(1)} km away).`;
+      }
+    } catch {
+      // ETA is cosmetic; the push still goes out without it.
+    }
+  }
+
   await notifyUser(String(updated.customer), {
     type: 'order',
     event: ORDER_STATUS_EVENTS[to],
     refId: String(updated._id),
     title: copy.title,
-    body: copy.body(updated.orderNumber ?? '', restaurantName),
-    data: { orderId: String(updated._id), orderNumber: updated.orderNumber, status: to },
+    body: copy.body(updated.orderNumber ?? '', restaurantName) + etaSuffix,
+    data: {
+      orderId: String(updated._id),
+      orderNumber: updated.orderNumber,
+      status: to,
+      ...(to === 'on_the_way' && etaSuffix ? { etaPush: true } : {}),
+    },
   });
 
   // The rider needs to know the moment an order is ready to collect.
@@ -759,10 +813,12 @@ export async function advanceOrderStatus(
     });
   }
 
-  // No rider assigned yet: fan the job out to the approved riders who are
-  // online right now. Previously the order sat in the feed with nobody told.
+  // No rider assigned yet: hand the order to the dispatch service. It gates on
+  // payment eligibility, offers the order to every approved online rider
+  // (private-room socket offer + Expo push) and re-broadcasts expired rounds —
+  // so an unclaimed order is retried instead of silently sitting in the feed.
   if (to === 'ready' && !updated.rider) {
-    await notifyAvailableRiders(updated, restaurantName);
+    void dispatchOrder(String(updated._id));
   }
 
   // The restaurant owner follows the order while it is in their kitchen;
@@ -776,16 +832,70 @@ export async function advanceOrderStatus(
     ).catch(() => undefined);
   }
 
+  // Delivered settles the engagement side-effects: loyalty points earn into
+  // the customer's balance and a referral bonus pays out on the referee's
+  // first delivered order. Both are ledger/idempotent and must never break the
+  // transition itself, so failures are contained here.
+  if (to === 'delivered') {
+    try {
+      const earned = await awardLoyaltyPoints({
+        _id: updated._id,
+        customer: updated.customer,
+        subtotal: updated.subtotal,
+        loyaltyPointsEarned: updated.loyaltyPointsEarned,
+      });
+      if (earned > 0) {
+        await OrderModel.updateOne(
+          { _id: updated._id },
+          { $set: { loyaltyPointsEarned: earned } },
+        ).catch(() => undefined);
+        await notifyUser(String(updated.customer), {
+          type: 'order',
+          event: 'order_delivered',
+          refId: String(updated._id),
+          title: `+${earned} loyalty points earned`,
+          body: `You earned ${earned} loyalty points on order ${updated.orderNumber}. Spend them at checkout.`,
+          data: { orderId: String(updated._id), orderNumber: updated.orderNumber, status: to },
+        }).catch(() => undefined);
+      }
+    } catch {
+      // Loyalty best-effort.
+    }
+    try {
+      await awardReferralOnDelivered({
+        _id: updated._id,
+        orderNumber: updated.orderNumber,
+        customer: updated.customer,
+        status: 'delivered',
+      });
+    } catch {
+      // Referral best-effort.
+    }
+    try {
+      // The rider finished their leg: give the slot back if nothing else is
+      // holding them busy, so they become available for the next offer round.
+      if (updated.rider) {
+        await revertRiderStatusIfIdle(String(updated.rider));
+      }
+    } catch {
+      // Status cosmetics — best-effort.
+    }
+  }
+
   return updated;
 }
 
 /**
- * Assign an approved rider to a ready order and emit rider-assigned live.
+ * Assign an approved rider to an order and emit rider-assigned live.
  *
- * Riders self-accepting through the feed are held to `ready` only: dispatching
- * them onto an order the kitchen has not packed yet leaves food waiting on a
- * rider. Admin dispatch may assign earlier (`allowEarly`) because an admin can
- * see the live queue and make that call deliberately.
+ * Two entry paths, deliberately separated:
+ *   - `ready` + unclaimed: the assignment goes through `claimRiderOrder` — the
+ *     same atomic SQL statement the rider Accept endpoint uses — so a racing
+ *     rider or racing admin can never double-assign, and the payment gate
+ *     (admin-verified money / cash) is enforced in the database itself.
+ *   - admin early-dispatch (`allowEarly`, pending/confirmed): the legacy CAS
+ *     apply is kept, because the kitchen has not packed the order yet and the
+ *     admin is explicitly overriding the queue order.
  */
 export async function assignRiderToOrder(
   orderId: string,
@@ -795,8 +905,28 @@ export async function assignRiderToOrder(
   // A pending / rejected rider must never be able to take a job.
   await assertRiderApproved(riderUserId);
 
-  const order = await OrderModel.findById(orderId);
-  if (!order) throw NOT_FOUND('Order');
+  const existing = await OrderModel.findById(orderId);
+  if (!existing) throw NOT_FOUND('Order');
+
+  if (existing.status === 'ready' && !existing.rider) {
+    // Atomic first-accept-wins claim (also enforces one-active-delivery and
+    // payment eligibility inside Postgres and flips the rider to `busy`).
+    const outcome = await claimRiderOrder(riderUserId, orderId);
+    if (outcome === 'rider_busy') {
+      throw CONFLICT('Finish your active delivery first — one delivery at a time.');
+    }
+    if (outcome === 'rider_not_approved') {
+      throw CONFLICT('Rider account is not approved for assignment');
+    }
+    if (outcome !== 'accepted') {
+      throw CONFLICT('This order is no longer available — it may already have a rider.');
+    }
+    const claimed = (await OrderModel.findById(orderId)) as Order;
+    await fanOutRiderAssigned(claimed, riderUserId);
+    return claimed;
+  }
+
+  const order = existing;
   if (!canAssignRider(order.status, options.allowEarly)) {
     throw CONFLICT(
       options.allowEarly
@@ -806,12 +936,33 @@ export async function assignRiderToOrder(
   }
   if (order.rider) throw CONFLICT('An rider is already assigned to this order');
 
+  // THE payment gate for early assignment. The open-feed path enforces this in
+  // `dispatchOrder` + the SQL `accept_rider_order` claim, and this is the same
+  // rule applied to the panel's assign button: no rider may be attached while
+  // the money is unverified — a pending/rejected manual transfer, or any
+  // non-cash order whose payment was never settled.
+  if (!paymentEligible(order)) {
+    throw CONFLICT(
+      'The payment must be approved by an admin before a rider can be assigned to this order',
+    );
+  }
+
   order.rider = riderUserId;
   order.status = 'rider_assigned';
   order.statusHistory.push({ status: 'rider_assigned', note: `Rider ${riderUserId} assigned` });
   order.riderPayout = Math.round((order.deliveryFee + order.platformFee) * RIDER_PAYOUT_RATE);
   await order.save();
 
+  // The order left the open pool the moment it was claimed: clear any pending
+  // offer rounds for it.
+  await stopDispatchForOrder(String(order._id), 'assigned').catch(() => undefined);
+
+  await fanOutRiderAssigned(order, riderUserId);
+  return order;
+}
+
+/** Socket + notification fan-out shared by both assignment paths. */
+async function fanOutRiderAssigned(order: Order, riderUserId: string): Promise<void> {
   const io = getIO();
   io.to(`user:${riderUserId}`).emit(SOCKET_EVENTS.orderRiderAssigned, {
     orderId: String(order._id),
@@ -831,7 +982,7 @@ export async function assignRiderToOrder(
     title: 'Rider assigned',
     body: `A rider has been assigned to order ${order.orderNumber} and is heading to the restaurant.`,
     data: { orderId: String(order._id), orderNumber: order.orderNumber, status: order.status },
-  });
+  }).catch(() => undefined);
 
   // And the rider gets a push, not just a socket event.
   await notifyUser(riderUserId, {
@@ -841,9 +992,7 @@ export async function assignRiderToOrder(
     title: 'New delivery assigned',
     body: `Collect order ${order.orderNumber} from ${restaurantName}.`,
     data: { orderId: String(order._id), orderNumber: order.orderNumber, status: order.status },
-  });
-
-  return order;
+  }).catch(() => undefined);
 }
 
 export async function cancelOrder(input: {
@@ -852,6 +1001,13 @@ export async function cancelOrder(input: {
   by: 'customer' | 'rider' | 'restaurant' | 'admin' | 'system';
   reason: string;
 }): Promise<Order> {
+  // A blank or one-character reason would leave "why was this cancelled?"
+  // questions unanswerable — enforce a minimum at the server gate.
+  const reason = input.reason.trim();
+  if (reason.length < 3) {
+    throw CONFLICT('Please give a clear cancellation reason (at least 3 characters).');
+  }
+
   const order = await OrderModel.findById(input.orderId);
   if (!order) throw NOT_FOUND('Order');
   if (order.status === 'cancelled' || order.status === 'delivered') {
@@ -887,21 +1043,45 @@ export async function cancelOrder(input: {
       $set: {
         status: 'cancelled',
         previousStatus: statusBeforeCancel,
-        cancelReason: input.reason,
+        cancelReason: reason,
         cancelledBy: input.by,
       },
     },
     { new: true },
   );
   if (!cancelled) throw CONFLICT('Order changed concurrently. Refresh and try again.');
+
+  // Dispatch bookkeeping: if the order was still being offered to riders it
+  // just left the pool — clear every pending offer so riders stop seeing it.
+  // If a rider already held the order, hand their availability back once no
+  // other job is keeping them busy.
+  if (cancelled.rider) {
+    await revertRiderStatusIfIdle(String(cancelled.rider)).catch(() => undefined);
+  } else {
+    await stopDispatchForOrder(String(cancelled._id), 'cancelled').catch(() => undefined);
+  }
+
   cancelled.statusHistory.push({
     status: 'cancelled',
-    note: `Cancelled by ${input.by}: ${input.reason}`,
+    note: `Cancelled by ${input.by}: ${reason}`,
   });
   await cancelled.save();
 
+  // Captured before either refund branch runs: the branches below re-assign
+  // `paymentStatus`, which would break the second check by narrowing.
+  const wasPaid = cancelled.paymentStatus === 'paid';
+
+  // Points were spent into this order and the food never arrived: refund the
+  // redeemed loyalty points so the balance is whole again. The single CAS
+  // transition above guarantees exactly one refund per order.
+  if ((cancelled.loyaltyPointsRedeemed ?? 0) > 0) {
+    await refundLoyaltyPoints(String(cancelled.customer), cancelled.loyaltyPointsRedeemed ?? 0).catch(
+      () => undefined,
+    );
+  }
+
   // Refund wallet payments that were already debited at placement.
-  if (cancelled.paymentMethod === 'wallet' && cancelled.paymentStatus === 'paid') {
+  if (wasPaid && cancelled.paymentMethod === 'wallet') {
     // Ledger-level idempotency: the refund description names the unique order
     // number, so a raced duplicate sees the first refund row and skips instead
     // of crediting the customer twice.
@@ -924,17 +1104,52 @@ export async function cancelOrder(input: {
     await PaymentModel.updateOne({ _id: cancelled.payment }, { $set: { status: 'refunded' } });
   }
 
+  // Verified MANUAL-TRANSFER payments (UBL / Easypaisa / JazzCash transfer)
+  // cannot be returned automatically: the money must be sent back to the
+  // account the customer paid from, which only a human can do from the bank
+  // app. Mark the money refunded-on-ledger and put the task on the admin team.
+  if (wasPaid && cancelled.paymentMethod !== 'wallet' && isManualTransferMethod(String(cancelled.paymentMethod))) {
+    cancelled.paymentStatus = 'refunded';
+    await cancelled.save();
+    await PaymentModel.findOneAndUpdate(
+      { _id: cancelled.payment },
+      { $set: { status: 'refunded', refundedAt: new Date() } },
+    );
+    await notifyAdminsRefundRequired(cancelled, reason, input.by);
+  }
+
   // Rejected before the kitchen ever accepted it; cancelled afterwards.
   const rejectedEarly = statusBeforeCancel === 'pending';
+  const refundedToWallet =
+    cancelled.paymentStatus === 'refunded' && cancelled.paymentMethod === 'wallet';
+  const manualRefundPending =
+    cancelled.paymentStatus === 'refunded' && cancelled.paymentMethod !== 'wallet';
   await notifyUser(String(cancelled.customer), {
     type: 'order',
     event: rejectedEarly ? 'order_rejected' : 'order_cancelled',
     refId: String(cancelled._id),
     title: rejectedEarly ? 'Order rejected' : 'Order cancelled',
     body: rejectedEarly
-      ? `${restaurantName} could not take order ${cancelled.orderNumber}.${cancelled.paymentStatus === 'refunded' ? ' Amount refunded to your wallet.' : ''}`
-      : `Your order ${cancelled.orderNumber} was cancelled.${cancelled.paymentStatus === 'refunded' ? ' Amount refunded to your wallet.' : ''}`,
-    data: { orderId: String(cancelled._id), orderNumber: cancelled.orderNumber, status: 'cancelled' },
+      ? `${restaurantName} could not take order ${cancelled.orderNumber}.${
+          refundedToWallet
+            ? ' Amount refunded to your wallet.'
+            : manualRefundPending
+              ? ' Your transfer refund has been queued — our team will send the money back to your paying account.'
+              : ''
+        }`
+      : `Your order ${cancelled.orderNumber} was cancelled.${
+          refundedToWallet
+            ? ' Amount refunded to your wallet.'
+            : manualRefundPending
+              ? ' Your transfer refund has been queued — the admin team will return it to your paying account.'
+              : ''
+        }`,
+    data: {
+      orderId: String(cancelled._id),
+      orderNumber: cancelled.orderNumber,
+      status: 'cancelled',
+      paymentStatus: String(cancelled.paymentStatus),
+    },
   });
 
   // Keep the rider informed if they were already holding this order.
@@ -956,11 +1171,47 @@ export async function cancelOrder(input: {
       cancelled,
       'order_cancelled',
       'Order cancelled',
-      `Order ${cancelled.orderNumber} was cancelled (${input.by}). Reason: ${input.reason}`,
+      `Order ${cancelled.orderNumber} was cancelled (${input.by}). Reason: ${reason}`,
     ).catch(() => undefined);
   }
 
   return cancelled;
+}
+
+/**
+ * A cancelled order whose money came in as a manual transfer cannot refund
+ * itself: the return leg is a human banking action. Every active admin gets a
+ * task-style alert so the payout never relies on somebody noticing a ledger row.
+ */
+async function notifyAdminsRefundRequired(
+  cancelled: OrderDoc,
+  reason: string,
+  by: string,
+): Promise<void> {
+  try {
+    const admins = await UserModel.find({ role: 'admin', status: 'active', deletedAt: null })
+      .select('_id')
+      .lean();
+    await Promise.all(
+      admins.map((admin) =>
+        notifyUser(String(admin._id), {
+          type: 'order',
+          event: 'order_cancelled',
+          refId: String(cancelled._id),
+          title: 'Manual transfer refund required',
+          body: `Order ${cancelled.orderNumber} (Rs ${cancelled.total}, paid by ${cancelled.paymentMethod}) was cancelled by ${by}. Send the refund back to the customer's paying account. Reason: ${reason}`,
+          data: {
+            orderId: String(cancelled._id),
+            orderNumber: cancelled.orderNumber,
+            paymentStatus: 'refunded',
+            refundRequired: true,
+          },
+        }).catch(() => undefined),
+      ),
+    );
+  } catch {
+    // The refund alert is best-effort; the payment is already marked refunded.
+  }
 }
 
 export async function markOrderPaidOnDelivery(orderId: string): Promise<Order> {

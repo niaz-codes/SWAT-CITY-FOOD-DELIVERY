@@ -43,6 +43,12 @@ export type RootStackParamList = {
   FoodDetails: { item: MenuItem; restaurantName: string };
   Cart: undefined;
   Checkout: undefined;
+  /**
+   * Direct bank/wallet transfer step reached right after checkout for the
+   * manual methods: shows the receiving account and takes the transfer proof
+   * (reference + receipt). Everything else is fetched by order id.
+   */
+  ManualTransfer: { orderId: string };
   OrderTracking: { orderId: string };
 
   LocationPicker: { mode: 'pickup' | 'dropoff' };

@@ -54,17 +54,20 @@ async function storageError(res: Response): Promise<Error> {
 export async function uploadBuffer(
   buffer: Buffer,
   options: { mimetype: string; ext: string; folder?: string },
+  bucketBucketOptions: { bucket?: string; isPublic?: boolean } = {},
 ): Promise<UploadedImage> {
   if (!buffer || buffer.length === 0) {
     throw new Error('No file to upload');
   }
 
+  const bucket = bucketBucketOptions.bucket ?? env.SUPABASE_STORAGE_BUCKET;
+  const isPublic = bucketBucketOptions.isPublic ?? true;
   const ext = EXT_BY_MIME[options.mimetype] ?? options.ext ?? 'bin';
   const publicId = `${options.folder ?? 'swat-city'}/${Date.now()}-${Math.random()
     .toString(36)
     .slice(2, 10)}.${ext}`;
 
-  const res = await fetch(storageUrl(publicId), {
+  const res = await fetch(storageUrlForBucket(publicId, bucket), {
     method: 'POST',
     headers: {
       apikey: env.SUPABASE_SECRET_KEY,
@@ -80,14 +83,84 @@ export async function uploadBuffer(
     throw await storageError(res);
   }
 
-  const url = `${env.SUPABASE_URL.replace(/\/+$/, '')}/storage/v1/object/public/${encodeURIComponent(
-    env.SUPABASE_STORAGE_BUCKET,
-  )}/${publicId
+  const url = isPublic
+    ? publicObjectUrl(bucket, publicId)
+    : ''; // Private buckets have no public URL — access goes through signed URLs.
+  return { url, publicId };
+}
+
+function objectPathUrl(bucket: string, path: string): string {
+  const encoded = path
     .split('/')
     .filter((part) => part.length > 0)
     .map((part) => encodeURIComponent(part))
-    .join('/')}`;
-  return { url, publicId };
+    .join('/');
+  return `${bucket}/${encoded}`;
+}
+
+function storageUrlForBucket(path: string, bucket: string): string {
+  const base = env.SUPABASE_URL.replace(/\/+$/, '');
+  return `${base}/storage/v1/object/${objectPathUrl(bucket, path)}`;
+}
+
+function publicObjectUrl(bucket: string, path: string): string {
+  const base = env.SUPABASE_URL.replace(/\/+$/, '');
+  return `${base}/storage/v1/object/public/${objectPathUrl(bucket, path)}`;
+}
+
+/**
+ * Creates the payment-receipt bucket (private) if it does not exist yet, so a
+ * fresh deployment does not need a manual Storage step. The service key is the
+ * only caller, matching how every other storage write is gated.
+ */
+export async function ensureBucket(name: string, isPublic = false): Promise<void> {
+  const base = env.SUPABASE_URL.replace(/\/+$/, '');
+  try {
+    // Buckets live under /storage/v1/bucket with the same secret-key headers.
+    const res = await fetch(`${base}/storage/v1/bucket`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ id: name, name, public: isPublic }),
+    });
+    // "Bucket already exists" is the happy path on every deployment after the
+    // first; anything else is logged by the caller.
+    void res;
+  } catch {
+    // Non-fatal: the schema migration creates the bucket too.
+  }
+}
+
+/**
+ * Short-lived signed URL for an object in a PRIVATE bucket (payment receipts).
+ * The backend decides who may see the file — the URL is minted per-request and
+ * expires, so a screenshot link cannot be shared publicly forever.
+ */
+export async function createSignedUrl(
+  bucket: string,
+  path: string,
+  expiresInMinutes = 30,
+): Promise<string> {
+  const base = env.SUPABASE_URL.replace(/\/+$/, '');
+  const target = `${base}/storage/v1/object/sign/${objectPathUrl(bucket, path)}`;
+  const res = await fetch(target, {
+    method: 'POST',
+    headers: {
+      apikey: env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ expiresIn: expiresInMinutes * 60 }),
+  });
+  if (!res.ok) {
+    throw await storageError(res as Response);
+  }
+  const body = (await res.json()) as { signedURL?: string };
+  if (!body?.signedURL) throw new Error('Storage did not return a signed URL');
+  return `${base}${body.signedURL}`;
 }
 
 export async function uploadFile(

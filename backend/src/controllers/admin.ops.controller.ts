@@ -11,9 +11,17 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
 import { AppError, NOT_FOUND, UNAUTHORIZED } from '../utils/AppError';
 import { paginationMeta } from '../utils/helpers';
+import { recordAdminAction } from '../services/adminAudit.service';
 import { advanceOrderStatus, cancelOrder, assignRiderToOrder } from '../services/order.service';
 import { cancelRide } from '../services/ride.service';
 import { listWalletTransactions } from '../services/wallet.service';
+import {
+  listManualPayments,
+  manualPaymentDetail,
+  reviewManualPayment,
+  type ReviewDecision,
+} from '../services/paymentReview.service';
+import { receiptSignedUrl } from '../services/manualPayment.service';
 import {
   listWithdrawals,
   withdrawalDetail,
@@ -65,17 +73,42 @@ export const adminAdvanceOrder = asyncHandler(async (req: AuthRequest, res: Resp
   const order = await OrderModel.findById(req.params.id);
   if (!order) throw NOT_FOUND('Order');
   const next = req.body.status as Parameters<typeof advanceOrderStatus>[1];
+  // An order is accepted (pending → confirmed) only AFTER its payment is
+  // verified. Cash pays on delivery and wallet pays at placement; every other
+  // method (gateways + direct bank/wallet transfers) must already be `paid` —
+  // a `pending_verification` payment can never unlock the kitchen.
+  if (
+    next === 'confirmed' &&
+    order.paymentMethod !== 'cash' &&
+    order.paymentMethod !== 'wallet' &&
+    order.paymentStatus !== 'paid'
+  ) {
+    throw new AppError(
+      'The payment has not been verified yet. Verify the transfer (or wait for the gateway) before accepting this order.',
+      409,
+    );
+  }
   const updated = await advanceOrderStatus(req.params.id, next, req.user._id);
   sendSuccess(res, { order: updated });
 });
 
 export const adminCancelOrder = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
+  const reason = String(req.body.reason ?? '').trim() || 'Cancelled by admin';
   const updated = await cancelOrder({
     orderId: req.params.id,
     actorId: req.user._id,
     by: 'admin',
-    reason: req.body.reason ?? 'Cancelled by admin',
+    reason,
+  });
+  // Money-adjacent admin action: an audit row regardless of whether a refund
+  // leg actually ran (wallet auto-refund vs manual transfer vs unpaid cash).
+  void recordAdminAction({
+    adminId: String(req.user._id),
+    action: 'order_cancel',
+    targetType: 'order',
+    targetId: String(updated._id),
+    detail: `paymentStatus=${updated.paymentStatus} — ${reason}`,
   });
   sendSuccess(res, { order: updated });
 });
@@ -146,6 +179,89 @@ export const adminListPayments = asyncHandler(async (req: AuthRequest, res: Resp
     PaymentModel.countDocuments(query),
   ]);
   sendSuccess(res, { payments }, paginationMeta(p, l, total));
+});
+
+// ---------------------------------------------------------------------------
+// Direct bank/wallet transfer verification (UBL + manual Easypaisa/JazzCash)
+// Only an authorised admin reaches these — requireAdmin sits on the router.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /admin/payments/verification — the transfer-verification queue.
+ * Default shows every manual payment the admin can still act on
+ * (pending_verification / pending / processing); `?status=` narrows it.
+ */
+export const adminListTransferPayments = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const { status, page = '1', limit = '20' } = req.query;
+  const p = Math.max(1, Number(page) || 1);
+  const l = Math.min(100, Math.max(1, Number(limit) || 20));
+  const { rows, total } = await listManualPayments({
+    status: status ? String(status) : undefined,
+    page: p,
+    limit: l,
+  });
+  sendSuccess(res, { payments: rows }, paginationMeta(p, l, total));
+});
+
+/**
+ * GET /admin/payments/verification/:id — full review bundle: payment (with a
+ * short-lived signed receipt URL), the order it belongs to, customer details,
+ * and the append-only audit log for this payment.
+ */
+export const adminTransferPaymentDetail = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const detail = await manualPaymentDetail(req.params.id);
+  if (!detail) throw NOT_FOUND('Payment');
+  sendSuccess(res, { verification: detail });
+});
+
+/**
+ * POST /admin/payments/verification/:id/decision — the verification itself.
+ * Body: { decision: approve | reject | request_info, reason? }.
+ *
+ * This is the ONLY place a manual-transfer payment may become `paid`. The
+ * handler re-checks ownership of the flow server-side (decision rules, amount
+ * match vs. the server-side order total, receipt presence for approvals) and
+ * writes the admin id + timestamp + decision + reason to the audit log.
+ */
+export const adminTransferPaymentDecision = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const { decision, reason } = req.body as { decision: ReviewDecision; reason?: string };
+  const { payment, order } = await reviewManualPayment({
+    paymentId: req.params.id,
+    adminId: String(req.user._id),
+    decision,
+    reason,
+  });
+  sendSuccess(res, {
+    payment: {
+      id: payment._id,
+      status: payment.status,
+      method: payment.method,
+      transactionRef: payment.transactionRef ?? null,
+      verifyAttempts: payment.verifyAttempts,
+    },
+    order: {
+      id: order._id,
+      orderNumber: order.orderNumber,
+      paymentStatus: order.paymentStatus,
+      status: order.status,
+    },
+  });
+});
+
+/**
+ * GET /admin/payments/verification/:id/receipt — refresh a signed receipt URL
+ * (the review drawer reuses the one in the detail bundle; this is for reloads).
+ */
+export const adminTransferReceiptUrl = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const payment = await PaymentModel.findById(req.params.id);
+  if (!payment) throw NOT_FOUND('Payment');
+  const url = await receiptSignedUrl(payment).catch(() => null);
+  if (!url) throw NOT_FOUND('Receipt');
+  sendSuccess(res, { url, expiresInMinutes: 30 });
 });
 
 export const adminListWallets = asyncHandler(async (req: AuthRequest, res: Response) => {

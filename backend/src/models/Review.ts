@@ -24,6 +24,14 @@ export interface Review {
   title?: string | null;
   comment?: string | null;
 
+  /**
+   * Restaurant reply (portal feature). One reply, edited by the restaurant
+   * that owns the reviewed entity; consumers render it below the review.
+   */
+  reply?: string | null;
+  repliedAt?: Date | null;
+  repliedBy?: string | null;
+
   // For order-linked reviews it must be completed/cancelled before reviewing
   verifiedPurchase: boolean;
 
@@ -44,6 +52,9 @@ export const ReviewModel = defineModel<Review>({
     'rating',
     'title',
     'comment',
+    'reply',
+    'repliedAt',
+    'repliedBy',
     'verifiedPurchase',
     'createdAt',
     'updatedAt',
@@ -54,5 +65,6 @@ export const ReviewModel = defineModel<Review>({
     order: () => OrderModel,
     ride: () => RideModel,
     rider: () => UserModel,
+    repliedBy: () => UserModel,
   },
 });

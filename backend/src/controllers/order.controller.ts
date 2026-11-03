@@ -1,5 +1,5 @@
 ﻿import type { Response } from 'express';
-import { OrderModel, isGatewayPaymentMethod, type OrderStatus } from '../models';
+import { OrderModel, RiderProfileModel, UserModel, isGatewayPaymentMethod, isManualTransferMethod, type OrderStatus } from '../models';
 import type { AuthRequest } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendSuccess } from '../utils/respond';
@@ -11,9 +11,10 @@ import {
   placeOrder,
 } from '../services/order.service';
 import { initiateOnlinePayment } from '../services/payment.service';
+import { getTransferInstructions } from '../services/manualPayment.service';
 import { emitToUser, SOCKET_EVENTS } from '../sockets';
-import { availableGateways } from '../services/payments';
 import { createHandoffToken } from '../services/payments/handoffToken';
+import { haversineKm } from '../utils/tokens';
 import { publicApiUrl } from '../config/env';
 
 /**
@@ -35,8 +36,14 @@ export const quoteOrder = asyncHandler(async (req: AuthRequest, res: Response) =
     }
   }
   const promoCode = typeof req.query.promoCode === 'string' ? req.query.promoCode : undefined;
+  const redeemPointsRaw =
+    typeof req.query.redeemPoints === 'string' ? Number(req.query.redeemPoints) : 0;
+  const redeemPoints =
+    Number.isFinite(redeemPointsRaw) && redeemPointsRaw > 0
+      ? Math.floor(redeemPointsRaw)
+      : 0;
 
-  const totals = await computeOrderTotals(req.user._id, { promoCode, tip });
+  const totals = await computeOrderTotals(req.user._id, { promoCode, tip, redeemPoints });
 
   sendSuccess(res, {
     subtotal: totals.subtotal,
@@ -44,6 +51,8 @@ export const quoteOrder = asyncHandler(async (req: AuthRequest, res: Response) =
     discount: totals.discount,
     platformFee: totals.platformFee,
     tip: totals.tip,
+    loyaltyPointsRedeemed: totals.loyaltyPointsRedeemed,
+    loyaltyDiscount: totals.loyaltyDiscount,
     total: totals.total,
     currency: 'PKR',
     itemCount: totals.items.reduce((n: number, i: any) => n + i.quantity, 0),
@@ -55,7 +64,6 @@ export const quoteOrder = asyncHandler(async (req: AuthRequest, res: Response) =
       gradient: totals.restaurant.gradient,
       cuisine: totals.restaurant.cuisine,
     },
-    methods: availableGateways(),
   });
 });
 
@@ -70,6 +78,8 @@ export const createOrder = asyncHandler(async (req: AuthRequest, res: Response) 
     tip: req.body.tip,
     note: req.body.note,
     idempotencyKey: req.body.idempotencyKey,
+    redeemPoints: req.body.redeemPoints,
+    scheduledFor: req.body.scheduledFor,
   });
 
   // Online payments are started AFTER the order exists, so the transaction is
@@ -127,6 +137,12 @@ export const createOrder = asyncHandler(async (req: AuthRequest, res: Response) 
       ? { active: true, label: 'DEMO — NOT REAL MONEY' }
       : null;
 
+  // Direct transfer orders skip gateways entirely: send the customer straight
+  // to the transfer-instructions/proof-submission step on the payment screen.
+  const transferDetails = isManualTransferMethod(order.paymentMethod)
+    ? await getTransferInstructions(String(order._id), String(req.user._id)).catch(() => null)
+    : null;
+
   sendSuccess(res, {
     order: {
       _id: order._id,
@@ -156,6 +172,7 @@ export const createOrder = asyncHandler(async (req: AuthRequest, res: Response) 
     },
     demoMode,
     handoff,
+    transferDetails,
   });
 });
 
@@ -193,22 +210,113 @@ export const orderDetail = asyncHandler(async (req: AuthRequest, res: Response) 
   sendSuccess(res, { order });
 });
 
+/**
+ * GET /orders/:id/track — the customer's live-delivery feed.
+ *
+ * One normalized payload both the socket stream (`rider:location`) and this
+ * REST fallback agree on, so `trackLive` consumers get rider position, pickup
+ * and drop-off coordinates on every poll — and NOTHING once tracking is over
+ * (delivered / cancelled): a rider never disappears for the customer here, the
+ * map simply stops being live.
+ */
 export const trackOrder = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
   const order = await OrderModel.findById(req.params.id)
-    .populate('rider', 'name phone avatarUrl lastLocation')
+    .populate('restaurant', 'name location addressLine area phone')
     .lean();
   if (!order) throw NOT_FOUND('Order');
   const isOwner = String(order.customer) === req.user._id;
   const isRider = order.rider && String(order.rider) === req.user._id;
   if (!isOwner && !isRider) throw new AppError('You can only track orders you are part of', 403);
+
+  const LIVE_STATUSES: OrderStatus[] = ['rider_assigned', 'picked_up', 'on_the_way'];
+  const trackingActive = Boolean(
+    order.rider && LIVE_STATUSES.includes(order.status as OrderStatus),
+  );
+
+  // The rider doc is the customer-facing identity; the live position lives on
+  // the rider profile (flushed every 10s by riderLocation.service).
+  const [rider, riderProfile, restaurant] = await Promise.all([
+    order.rider ? UserModel.findById(order.rider).select('name phone avatarUrl').lean() : null,
+    order.rider
+      ? RiderProfileModel.findOne({ user: order.rider })
+          .select('name phone lastLocation isOnline')
+          .lean()
+      : null,
+    order.restaurant as unknown as
+      | {
+          _id?: unknown;
+          name?: string;
+          addressLine?: string;
+          area?: string;
+          location?: { coordinates?: number[] };
+        }
+      | undefined,
+  ]);
+
+  // GeoJSON ordering holds throughout the codebase: coordinates[0]=lng, [1]=lat.
+  const restaurantCoords = restaurant?.location?.coordinates;
+  const pickup =
+    restaurantCoords && restaurantCoords.length === 2
+      ? { lat: Number(restaurantCoords[1]), lng: Number(restaurantCoords[0]) }
+      : null;
+
+  const destination = order.addressSnapshot?.lat != null && order.addressSnapshot?.lng != null
+    ? { lat: Number(order.addressSnapshot.lat), lng: Number(order.addressSnapshot.lng) }
+    : null;
+
+  const lastLoc = (riderProfile?.lastLocation ?? null) as
+    | { lat: number; lng: number; heading?: number; updatedAt?: unknown }
+    | null;
+  const riderLocation =
+    lastLoc && typeof lastLoc.lat === 'number' && typeof lastLoc.lng === 'number'
+      ? {
+          lat: lastLoc.lat,
+          lng: lastLoc.lng,
+          heading: Number(lastLoc.heading ?? 0),
+          updatedAt: lastLoc.updatedAt ? new Date(lastLoc.updatedAt as string).toISOString() : null,
+        }
+      : null;
+
+  // Distance + ETA from the rider to their NEXT stop: the pickup point before
+  // they collect the food, the customer afterwards. Straight-line km pushed
+  // through the same ~22 km/h urban speed factor used elsewhere; a rider with
+  // no fix yet simply reports no ETA instead of a lie.
+  let riderDistanceKm: number | null = null;
+  let etaMinutes: number | null = null;
+  if (riderLocation && trackingActive) {
+    const target = order.status === 'rider_assigned' ? pickup : destination;
+    if (target) {
+      riderDistanceKm = Math.round(haversineKm(target, riderLocation) * 10) / 10;
+      etaMinutes = Math.max(1, Math.round((riderDistanceKm / 22) * 60));
+    }
+  }
+
   sendSuccess(res, {
     orderId: String(order._id),
-    orderNumber: order.orderNumber,
+    orderNumber: order.orderNumber ?? null,
     status: order.status,
-    statusHistory: order.statusHistory,
-    rider: order.rider,
-    estimatedMinutes: order.estimatedMinutes,
+    previousStatus: order.previousStatus ?? null,
+    trackingActive,
+    estimatedMinutes: Number(order.estimatedMinutes) || null,
+    pickup: pickup
+      ? { lat: pickup.lat, lng: pickup.lng, name: restaurant?.name ?? 'Restaurant', address: restaurant?.addressLine ?? '', area: restaurant?.area ?? '' }
+      : null,
+    destination: destination
+      ? { lat: destination.lat, lng: destination.lng, address: order.addressSnapshot?.full ?? '' }
+      : null,
+    rider: rider
+      ? {
+          id: String(rider._id),
+          name: riderProfile?.name ?? (rider as { name?: string }).name ?? 'Rider',
+          phone: riderProfile?.phone ?? (rider as { phone?: string }).phone ?? '',
+          avatarUrl: (rider as { avatarUrl?: string | null }).avatarUrl ?? null,
+          online: Boolean(riderProfile?.isOnline),
+          location: trackingActive ? riderLocation : null,
+        }
+      : null,
+    riderDistanceKm,
+    etaMinutes,
   });
 });
 

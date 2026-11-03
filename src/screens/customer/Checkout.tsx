@@ -1,10 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as WebBrowser from 'expo-web-browser';
 import { RootStackParamList } from '../../navigation/types';
 import { AppText } from '../../components/AppText';
 import { AppHeader } from '../../components/AppHeader';
@@ -23,8 +22,8 @@ import {
   cartApi,
   orderApi,
   paymentApi,
+  isManualTransferMethod,
   type CheckoutPaymentMethod,
-  type GatewayMethodInfo,
   type OrderQuote,
 } from '../../services/api';
 import { apiErrorMessage } from '../../services/client';
@@ -35,87 +34,63 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Checkout'>;
 type MethodKey = CheckoutPaymentMethod;
 
 /**
- * Official brand colours for each wallet. Used to render the gateway's own
- * identity in the payment list. Drop the press kit logo into
- * `src/assets/payments/` and swap `short` for an <Image> when you have licensed
- * artwork — the colours below keep the row on-brand until then.
+ * Official brand colours for the direct-transfer rows: UBL green plus the
+ * wallet brands' official colours for the "pay by hand" variants.
  */
 const BRAND: Record<string, { bg: string; fg: string; short: string }> = {
-  easypaisa: { bg: '#3BAE49', fg: '#FFFFFF', short: 'EP' },
-  jazzcash: { bg: '#EE1C25', fg: '#FFFFFF', short: 'JC' },
-  demo: { bg: '#B45309', fg: '#FFFFFF', short: 'Q' },
+  ubl: { bg: '#0B7A3B', fg: '#FFFFFF', short: 'UBL' },
+  easypaisa_transfer: { bg: '#3BAE49', fg: '#FFFFFF', short: 'EP' },
+  jazzcash_transfer: { bg: '#EE1C25', fg: '#FFFFFF', short: 'JC' },
 };
 
-const METHODS: {
+type MethodRow = {
   key: MethodKey;
   label: string;
   note: string;
-  /** Field name used to match the backend's `methods` availability list. */
-  gateway: 'easypaisa' | 'jazzcash' | 'demo';
   brand: { bg: string; fg: string; short: string };
-}[] = [
-  {
-    key: 'easypaisa',
-    label: 'Easypaisa',
-    note: 'Pay from your Easypaisa mobile account',
-    gateway: 'easypaisa',
-    brand: BRAND.easypaisa,
-  },
-  {
-    key: 'jazzcash',
-    label: 'JazzCash',
-    note: 'Pay securely on the JazzCash page',
-    gateway: 'jazzcash',
-    brand: BRAND.jazzcash,
-  },
-  /**
-   * Offered as the wallet-free option. The customer-facing copy stays neutral —
-   * the "DEMO — NOT REAL MONEY" marking is kept on the server side: every demo
-   * payment row, the admin Payments panel and the wallet ledger are labelled,
-   * so internal records can never be mistaken for real money.
-   */
-  {
-    key: 'demo',
-    label: 'Quick Pay',
-    note: 'Pay in one tap — no wallet app needed',
-    gateway: 'demo',
-    brand: BRAND.demo,
-  },
-];
-
-type VerificationResult = Awaited<ReturnType<typeof paymentApi.verify>>;
+};
 
 /**
- * Easypaisa MA debits the wallet on the payer's own handset, so the debit can
- * legitimately still be in flight when we come back to the app — there is no
- * browser round-trip to wait on. Poll the gateway a few times before saying
- * anything. Only `paid` or `failed` ends the wait; anything else is still
- * pending and must not be reported as a success.
+ * Direct bank/wallet transfer options. NO gateway belongs to them and no
+ * payer phone is needed — the customer moves the money themselves after the
+ * order is placed and then submits the transfer receipt for admin
+ * verification. These are the ONLY checkout methods of this platform: the
+ * backend rejects every other method at order creation, so nothing gateway-
+ * shaped can be opened — not even by a tampered client.
  */
-async function verifyWithRetries(
-  orderId: string,
-  attempts = 4,
-  delayMs = 2500,
-): Promise<VerificationResult> {
-  let result = await paymentApi.verify(orderId);
-  for (let i = 1; i < attempts && result.status === 'pending'; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-    result = await paymentApi.verify(orderId);
-  }
-  return result;
-}
+const MANUAL_METHODS: MethodRow[] = [
+  {
+    key: 'ubl',
+    label: 'Direct Bank Transfer (UBL)',
+    note: 'Transfer to our UBL account, submit receipt',
+    brand: BRAND.ubl,
+  },
+  {
+    key: 'easypaisa_transfer',
+    label: 'Easypaisa (Direct Transfer)',
+    note: 'Send to our Easypaisa number, submit receipt',
+    brand: BRAND.easypaisa_transfer,
+  },
+  {
+    key: 'jazzcash_transfer',
+    label: 'JazzCash (Direct Transfer)',
+    note: 'Send to our JazzCash number, submit receipt',
+    brand: BRAND.jazzcash_transfer,
+  },
+];
 
 export function CheckoutScreen({ navigation }: Props) {
   const { colors } = useThemeColors();
   const insets = useSafeAreaInsets();
   const { items, restaurantId, count, clear } = useCart();
-  const { error, success } = useToast();
+  const { error } = useToast();
   const [placing, setPlacing] = useState(false);
 
   const addresses = useAsyncData(() => addressApi.getSaved(), []);
   const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
-  const [method, setMethod] = useState<MethodKey>('easypaisa');
-  const [phone, setPhone] = useState('');
+  // Direct transfers are the only checkout methods, so the default is the first
+  // row the customer sees.
+  const [method, setMethod] = useState<MethodKey>('ubl');
 
   /**
    * Money is always taken from the server. `quote` returns exactly the figures
@@ -124,7 +99,6 @@ export function CheckoutScreen({ navigation }: Props) {
    */
   const [quote, setQuote] = useState<OrderQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [gateways, setGateways] = useState<GatewayMethodInfo[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,9 +113,6 @@ export function CheckoutScreen({ navigation }: Props) {
         if (!cancelled) {
           setQuote(q);
           setQuoteError(null);
-          // Availability rides along with the quote; only use it when the
-          // dedicated /payments/methods call has answered nothing.
-          setGateways((prev) => (prev.length > 0 ? prev : (q.methods ?? [])));
         }
       } catch (e: unknown) {
         if (!cancelled) setQuoteError(apiErrorMessage(e, 'Could not load your bill'));
@@ -152,78 +123,19 @@ export function CheckoutScreen({ navigation }: Props) {
     };
   }, [items, restaurantId]);
 
-  useEffect(() => {
-    let cancelled = false;
-    paymentApi
-      .methods()
-      .then((list) => !cancelled && setGateways(list))
-      .catch(() => {
-        // Availability is advisory here; the server still enforces it. If the list
-        // cannot load we simply do not disable anything ourselves.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const deliveryAddress = useMemo(
     () => (addresses.data ?? []).find((a) => a.id === selectedAddressId) ?? null,
     [addresses.data, selectedAddressId],
   );
 
-  const enabled = useCallback(
-    (candidate: MethodKey) => {
-      const meta = METHODS.find((m) => m.key === candidate);
-      if (!meta) return false;
-      const entry = gateways.find((g) => g.method === meta.gateway);
-      // While availability is still unknown, leave the option enabled and let
-      // the server be the authority on submit.
-      if (!entry) return true;
-      return entry.enabled;
-    },
-    [gateways],
-  );
-
-  /**
-   * Only methods the backend reports as fully configured are offered.
-   *
-   * Until `/payments/methods` answers we show nothing rather than guess: a wallet
-   * that turns out to be unconfigured would otherwise draw the customer through
-   * the whole checkout and then fail at submit.
-   */
-  const availabilityLoaded = gateways.length > 0;
-  const visibleMethods = availabilityLoaded ? METHODS.filter((m) => enabled(m.key)) : [];
-  const noGatewayAvailable = availabilityLoaded && visibleMethods.length === 0;
-
-  /** Why the section is empty, shown in place of the method rows. */
-  const emptyMessage = noGatewayAvailable
-    ? 'No payment method is available right now. Please try again later.'
-    : 'Loading payment methods…';
-
-  /**
-   * Keep a valid selection as availability arrives. Adjusted during render
-   * (React's "adjust state when props change" pattern) so the default never
-   * stays on a wallet the server reports as unconfigured.
-   */
-  if (!enabled(method)) {
-    const first = METHODS.find((m) => enabled(m.key));
-    if (first && first.key !== method) setMethod(first.key);
-  }
+  /** Direct-transfer rows carry no gateway to configure and are always offered. */
+  const visibleMethods: MethodRow[] = MANUAL_METHODS;
 
   const restaurant = quote?.restaurant;
   const total = quote?.total ?? 0;
-  // Both integrated gateways settle against a mobile wallet account, so the
-  // payer must always supply the number the debit will be taken from. Demo Pay
-  // contacts nobody, so it is the odd one out that needs no phone at all.
-  const needsPhone = method !== 'demo';
-  const phoneValid = /^(\+?92|0)?3\d{9}$/.test(phone.replace(/[\s-]/g, ''));
-  const canSubmit =
-    Boolean(deliveryAddress) &&
-    Boolean(quote) &&
-    !quoteError &&
-    !noGatewayAvailable &&
-    enabled(method) &&
-    (!needsPhone || phoneValid);
+  // Direct transfers need no payer phone: the customer pays by hand from
+  // whichever account they like and submits the receipt afterwards.
+  const canSubmit = Boolean(deliveryAddress) && Boolean(quote) && !quoteError;
 
   if (items.length === 0) {
     return (
@@ -241,9 +153,9 @@ export function CheckoutScreen({ navigation }: Props) {
   }
 
   /**
-   * One tap = one charge. The idempotency key is generated per attempt and reused
-   * for retries of the *same* attempt, so a double tap or a dropped response can
-   * never create two payments.
+   * One tap = one attempt id. The idempotency key is generated per attempt and
+   * reused for retries of the *same* attempt, so a double tap or a dropped
+   * response can never create two orders.
    */
   const submitOrder = async () => {
     if (!deliveryAddress || !canSubmit) return;
@@ -260,37 +172,25 @@ export function CheckoutScreen({ navigation }: Props) {
         quote?.deliveryFee ?? 0,
         0,
         method,
-        {
-          customerPhone: needsPhone ? phone.replace(/[\s-]/g, '') : undefined,
-          idempotencyKey,
-        },
+        { idempotencyKey },
       );
 
       const orderId = result.order.id;
 
-      // JazzCash is a hosted MPAY checkout, so the payer leaves the app and we
-      // wait for them to come back. Easypaisa MA has no redirect at all, so
-      // `handoff` is null and there is simply nothing to open. Demo pays inside
-      // the server, so there is no browser at all.
-      if (result.handoff?.url) {
-        await WebBrowser.openBrowserAsync(result.handoff.url);
-      }
-
-      // Nothing above proves money moved — not the handoff, not the redirect.
-      // Only the server, asking the gateway, may clear the cart. This also covers
-      // Easypaisa, whose null handoff used to be mistaken for a cash order and
-      // reported as placed without ever checking the wallet.
-      const verification = await verifyWithRetries(orderId);
-
-      if (verification.status === 'paid') {
+      // Direct bank/wallet transfer skips gateways entirely: the customer moves
+      // the money AFTER this point and submits the receipt on the next screen,
+      // so there is no browser handoff and no gateway verification to wait on.
+      // The order exists already, so the device cart is released here rather
+      // than inviting a second, duplicate order from the same cart.
+      if (result.transferDetails || isManualTransferMethod(method)) {
         clear();
-        success('Order placed — payment confirmed');
-      } else if (verification.status === 'failed') {
-        error(verification.reason ?? 'Payment failed. Your order was not charged.');
-      } else {
-        error('Payment is still processing. We will confirm shortly.');
+        navigation.replace('ManualTransfer', { orderId });
+        return;
       }
 
+      // Defence in depth only: the UI and the server both restrict checkout to
+      // direct transfers, so this branch should be unreachable. Landing on
+      // tracking is safe — it polls the real payment state from the server.
       navigation.replace('OrderTracking', { orderId });
     } catch (e: unknown) {
       error(apiErrorMessage(e, 'Could not place your order. Please try again.'));
@@ -298,24 +198,8 @@ export function CheckoutScreen({ navigation }: Props) {
     }
   };
 
-  /**
-   * The wallet-free method settles instantly, so it still confirms with the
-   * customer before the order is placed. No "demo" wording — the server records
-   * carry the marking; the customer just sees a normal checkout.
-   */
   const placeOrder = () => {
-    if (method !== 'demo') {
-      void submitOrder();
-      return;
-    }
-    Alert.alert(
-      'Confirm your order',
-      `Place your order and confirm payment of ${formatCurrency(total)} now?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Place order', onPress: () => void submitOrder() },
-      ],
-    );
+    void submitOrder();
   };
 
   return (
@@ -370,11 +254,6 @@ export function CheckoutScreen({ navigation }: Props) {
             { backgroundColor: colors.surfaceRaised, borderColor: colors.border },
           ]}
         >
-          {visibleMethods.length === 0 && (
-            <AppText variant="small" color={colors.textMuted} style={styles.emptyMessage}>
-              {emptyMessage}
-            </AppText>
-          )}
           {visibleMethods.map((p, i) => {
             const active = method === p.key;
             return (
@@ -415,38 +294,6 @@ export function CheckoutScreen({ navigation }: Props) {
             );
           })}
         </View>
-
-        {needsPhone && (
-          <Animated.View entering={FadeInUp.duration(220)} style={styles.phoneBlock}>
-            <AppText variant="captionBold" color={colors.textPrimary}>
-              Easypaisa mobile number
-            </AppText>
-            <AppText variant="small" color={colors.textMuted}>
-              We debit the amount from this Easypaisa account. 03XX XXXXXXX
-            </AppText>
-            <TextInput
-              value={phone}
-              onChangeText={setPhone}
-              placeholder="0300 1234567"
-              placeholderTextColor={colors.textMuted}
-              keyboardType="phone-pad"
-              autoComplete="tel"
-              style={[
-                styles.phoneInput,
-                {
-                  backgroundColor: colors.surfaceRaised,
-                  borderColor: phone.length > 0 && !phoneValid ? colors.danger : colors.border,
-                  color: colors.textPrimary,
-                },
-              ]}
-            />
-            {phone.length > 0 && !phoneValid && (
-              <AppText variant="micro" color={colors.danger}>
-                Enter a valid 11-digit Pakistani mobile number
-              </AppText>
-            )}
-          </Animated.View>
-        )}
 
         <SectionLabel icon="receipt-outline" label="Bill summary" />
         <View
@@ -505,11 +352,7 @@ export function CheckoutScreen({ navigation }: Props) {
       >
         <AppButton
           label={
-            quote
-              ? method === 'demo'
-                ? `Place order · ${formatCurrency(total)}`
-                : `Pay · ${formatCurrency(total)}`
-              : 'Preparing your bill…'
+            quote ? `Place order · ${formatCurrency(total)}` : 'Preparing your bill…'
           }
           onPress={placeOrder}
           size="lg"
@@ -517,11 +360,8 @@ export function CheckoutScreen({ navigation }: Props) {
           disabled={!canSubmit}
         />
         <AppText variant="micro" color={colors.textMuted} center style={styles.footerNote}>
-          {noGatewayAvailable
-            ? 'No payment method is available right now. Please try again later.'
-            : method === 'demo'
-              ? 'Your order is confirmed right away — no payment page is opened.'
-              : 'You will be taken to the payment page. Your order is confirmed once payment succeeds.'}
+          You will transfer the amount after placing the order — your order is confirmed only
+          after your payment screenshot is verified by our admin.
         </AppText>
       </Animated.View>
     </View>
@@ -583,7 +423,6 @@ const styles = StyleSheet.create({
   etaInfo: { flex: 1 },
   paymentCard: { borderRadius: 18, borderWidth: 1, padding: spacing.sm },
   paymentRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.m, padding: spacing.sm },
-  emptyMessage: { paddingVertical: spacing.s },
   payIcon: {
     width: 44,
     height: 44,
@@ -601,15 +440,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   radioDot: { width: 11, height: 11, borderRadius: 6 },
-  phoneBlock: { marginTop: spacing.m, gap: spacing.xs },
-  phoneInput: {
-    marginTop: spacing.xs,
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingHorizontal: spacing.m,
-    paddingVertical: spacing.sm,
-    fontSize: 15,
-  },
   summary: { borderRadius: 18, borderWidth: 1, padding: spacing.m, gap: spacing.sm },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   total: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

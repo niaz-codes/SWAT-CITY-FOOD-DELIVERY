@@ -13,9 +13,9 @@ import { sendSuccess } from '../utils/respond';
 import { AppError, NOT_FOUND, UNAUTHORIZED } from '../utils/AppError';
 import {
   advanceOrderStatus,
-  assignRiderToOrder,
   payRiderEarnings,
 } from '../services/order.service';
+import { paymentEligible, riderAcceptsOffer } from '../services/dispatch.service';
 import { getOrCreateWallet } from '../services/wallet.service';
 import { uploadFile } from '../services/storage.service';
 import {
@@ -24,6 +24,7 @@ import {
   setRiderBaseLocation,
 } from '../services/riderVehicle.service';
 import { assertRiderApproved } from '../services/riderApproval.service';
+import { getSetting } from '../services/settings.service';
 
 export const getRiderProfile = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
@@ -183,11 +184,16 @@ export const riderFeed = asyncHandler(async (req: AuthRequest, res: Response) =>
   const profile = await RiderProfileModel.findOne({ user: req.user._id }).lean();
   if (!profile) throw NOT_FOUND('Rider profile');
 
-  const orders = await OrderModel.find({ status: 'ready', rider: null, deletedAt: null })
+  const ordersRaw = await OrderModel.find({ status: 'ready', rider: null, deletedAt: null })
     .sort({ createdAt: 1 })
     .limit(20)
     .populate('restaurant', 'name emoji gradient addressLine area deliveryKM cuisine')
     .lean();
+
+  // Payment gate, second layer: a manual-transfer order is work for a rider
+  // ONLY once an admin verified its screenshot to `paid` (or a gateway settled
+  // it); a `pending` payment is legitimate solely for cash-on-delivery.
+  const orders = (ordersRaw as (typeof ordersRaw[number])[]).filter((o) => paymentEligible(o as never));
 
   const feed = orders.map((o) => {
     const restaurant = o.restaurant as unknown as
@@ -210,11 +216,19 @@ export const riderFeed = asyncHandler(async (req: AuthRequest, res: Response) =>
   sendSuccess(res, { feed });
 });
 
-/** Rider accepts a ready food order. */
+/**
+ * Rider accepts an offered / ready food order.
+ *
+ * The claim is one atomic SQL statement (`accept_rider_order`): first Accept
+ * wins, concurrent losers get "someone else took this order", a rider already
+ * holding an active delivery gets "one delivery at a time", and an unverified
+ * payment (screenshot not admin-approved) can never be claimed at all — all
+ * enforced in the database, not in this handler.
+ */
 export const acceptOrderJob = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw UNAUTHORIZED();
   const { orderId } = req.body as { orderId: string };
-  const order = await assignRiderToOrder(orderId, req.user._id);
+  const order = await riderAcceptsOffer(String(req.user._id), orderId);
   sendSuccess(res, { order });
 });
 
@@ -246,25 +260,43 @@ export const riderEarnings = asyncHandler(async (req: AuthRequest, res: Response
   const startOfWeek = new Date(now);
   startOfWeek.setDate(now.getDate() - 7);
 
-  const [weekTx, allTx, deliveredCount, totalTrips, ratingDoc, completedRides] = await Promise.all([
-    WalletTransactionModel.find({
-      user: req.user._id,
-      type: { $in: ['earning', 'debit'] },
-      createdAt: { $gte: startOfWeek },
-    }).lean(),
-    WalletTransactionModel.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(100).lean(),
-    OrderModel.countDocuments({ rider: req.user._id, status: 'delivered' }),
-    OrderModel.countDocuments({
-      rider: req.user._id,
-      status: { $in: ['delivered', 'on_the_way', 'picked_up', 'rider_assigned'] },
-    }),
-    RiderProfileModel.findOne({ user: req.user._id }).select('rating totalTrips').lean(),
-    RideModel.countDocuments({ rider: req.user._id, status: 'completed' }),
-  ]);
+  const [weekTx, allTx, deliveredOrders, assignedCount, cancelledCount, ratingDoc, completedRides, weekRides] =
+    await Promise.all([
+      WalletTransactionModel.find({
+        user: req.user._id,
+        type: { $in: ['earning', 'debit'] },
+        createdAt: { $gte: startOfWeek },
+      }).lean(),
+      WalletTransactionModel.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(100).lean(),
+      OrderModel.find({ rider: req.user._id, status: 'delivered' })
+        .select('distanceKm riderPayout')
+        .lean(),
+      OrderModel.countDocuments({ rider: req.user._id, status: { $ne: 'pending' } }),
+      OrderModel.countDocuments({ rider: req.user._id, status: 'cancelled' }),
+      RiderProfileModel.findOne({ user: req.user._id }).select('rating totalTrips').lean(),
+      RideModel.countDocuments({ rider: req.user._id, status: 'completed' }),
+      RideModel.find({ rider: req.user._id, status: 'completed' }).select('distanceKm').lean(),
+    ]);
+
+  const deliveredCount = deliveredOrders.length;
+  // Km actually served: delivered food orders + completed rides.
+  const totalKm =
+    (deliveredOrders as any[]).reduce((s, o) => s + (Number(o.distanceKm) || 0), 0) +
+    (weekRides as any[]).reduce((s, r) => s + (Number(r.distanceKm) || 0), 0);
+  // Acceptance: how often the rider finished what they accepted. A cancelled
+  // job counts against them only once (denominator = every job they touched).
+  const acceptance =
+    deliveredCount === 0
+      ? 100
+      : Math.round((deliveredCount / Math.max(1, deliveredCount + cancelledCount)) * 100);
 
   const weekAmount = weekTx.filter((t) => t.type === 'earning').reduce((s, t) => s + t.amount, 0);
   const profile = ratingDoc ?? { rating: 0, totalTrips: 0 };
   const completed = deliveredCount + completedRides;
+  const weeklyTargetSetting = await getSetting<number>('rider_weekly_target');
+  const weeklyTarget = Number.isFinite(Number(weeklyTargetSetting))
+    ? Number(weeklyTargetSetting)
+    : 6000;
 
   sendSuccess(res, {
     balance: wallet.balance,
@@ -272,18 +304,77 @@ export const riderEarnings = asyncHandler(async (req: AuthRequest, res: Response
       rating: profile.rating ?? 0,
       completed,
       totalTrips: profile.totalTrips ?? 0,
-      acceptance: 100,
+      acceptance,
       satisfaction: Math.round(((profile.rating ?? 0) / 5) * 100),
-      totalKm: 0,
+      totalKm: Math.round(totalKm * 10) / 10,
     },
     period: {
       label: 'This week',
       amount: weekAmount,
       trips: weekTx.filter((t) => t.type === 'earning').length,
-      hoursOnline: 0,
+      target: weeklyTarget,
+      progress: Math.min(100, Math.round((weekAmount / Math.max(1, weeklyTarget)) * 100)),
       onTime: 97,
     },
     transactions: allTx,
+  });
+});
+
+/**
+ * Weekly payout leaderboard: top riders by food-order earnings over the rolling
+ * 7 days, with the caller's own standing attached. Drives the friendly
+ * competition cards on the rider earnings hub.
+ */
+export const riderLeaderboard = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw UNAUTHORIZED();
+  const now = new Date();
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - 7);
+  startOfWeek.setHours(0, 0, 0, 0);
+
+  const [delivered, riders] = await Promise.all([
+    OrderModel.find({
+      status: 'delivered',
+      rider: { $ne: null } as any,
+      updatedAt: { $gte: startOfWeek },
+    })
+      .select('rider riderPayout distanceKm')
+      .lean(),
+    RiderProfileModel.find({})
+      .select('user name rating')
+      .lean(),
+  ]);
+
+  const byRider = new Map<string, { earnings: number; trips: number; km: number }>();
+  for (const o of delivered as any[]) {
+    if (!o.rider) continue;
+    const key = String(o.rider);
+    const cur = byRider.get(key) ?? { earnings: 0, trips: 0, km: 0 };
+    cur.earnings += Number(o.riderPayout) || 0;
+    cur.trips += 1;
+    cur.km += Number(o.distanceKm) || 0;
+    byRider.set(key, cur);
+  }
+
+  const names = new Map<string, string>();
+  for (const r of riders as any[]) names.set(String(r.user), String(r.name ?? 'Rider'));
+
+  const rows = Array.from(byRider.entries())
+    .map(([riderId, agg]) => ({
+      riderId,
+      name: names.get(riderId) ?? 'Rider',
+      earnings: Math.round(agg.earnings),
+      trips: agg.trips,
+      km: Math.round(agg.km * 10) / 10,
+    }))
+    .sort((a, b) => b.earnings - a.earnings)
+    .slice(0, 10);
+
+  const myIndex = rows.findIndex((r) => r.riderId === String(req.user?._id));
+  sendSuccess(res, {
+    range: 'rolling-7d',
+    leaders: rows,
+    me: myIndex >= 0 ? { rank: myIndex + 1, ...rows[myIndex] } : { rank: null },
   });
 });
 

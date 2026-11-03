@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   LifeBuoy,
   Settings,
+  ShieldCheck,
   ShoppingBag,
   Store,
   Tag,
@@ -99,6 +100,12 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     label: 'Finance',
     items: [
+      {
+        name: 'Transfer Verification',
+        to: '/payments/verification',
+        icon: ShieldCheck,
+        description: 'Approve or reject direct UBL/Easypaisa/JazzCash transfer receipts',
+      },
       {
         name: 'Payments',
         to: '/payments',
