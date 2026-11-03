@@ -368,8 +368,35 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
       delivered: { text: 'Delivered', sub: 'Enjoy your meal from Swat City Food Delivery!' },
       cancelled: { text: 'Order cancelled', sub: 'We are sorry about that' },
     };
-    return map[status];
-  }, [status]);
+    const base = map[status];
+    // Direct-transfer orders: the real milestone BEFORE admin verification is
+    // the payment, not the kitchen. The generic "waiting for the restaurant"
+    // line would be nonsense while the order cannot even be confirmed yet.
+    if (
+      isManualTransferMethod(paymentState?.paymentMethod ?? '') &&
+      status !== 'cancelled' &&
+      status !== 'delivered' &&
+      paymentStatus !== 'paid'
+    ) {
+      if (paymentStatus === 'pending_verification') {
+        return {
+          text: 'Waiting for approval',
+          sub: 'Admin is verifying your transfer against the bank statement',
+        };
+      }
+      if (paymentStatus === 'rejected') {
+        return {
+          text: 'Payment not verified',
+          sub: 'Submit corrected proof to get your order approved',
+        };
+      }
+      return {
+        text: 'Waiting for payment',
+        sub: 'Transfer the amount and upload your receipt to finish checkout',
+      };
+    }
+    return base;
+  }, [status, paymentState, paymentStatus]);
 
   const handleCancel = () => {
     haptics.warning();
@@ -748,6 +775,25 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
             </AppText>
           ) : null}
 
+          {/* No proof on file yet (customer left the instructions screen, or
+              a failed attempt used up nothing): the checkout can still be
+              finished by submitting the transfer receipt now. */}
+          {(paymentStatus === 'pending' ||
+            paymentStatus === 'processing' ||
+            paymentStatus === 'failed') &&
+            isManualTransferMethod(paymentState.paymentMethod) &&
+            status !== 'cancelled' && (
+              <Pressable
+                onPress={() => navigation.navigate('ManualTransfer', { orderId })}
+                hitSlop={6}
+                style={styles.switchRow}
+              >
+                <AppText variant="micro" color={colors.primary} weight="semiBold">
+                  Transfer now &amp; upload payment screenshot
+                </AppText>
+              </Pressable>
+            )}
+
           {/* A rejected manual-transfer proof is fixed by submitting corrected
               proof on the instructions screen — no gateway to retry. */}
           {paymentStatus === 'rejected' &&
@@ -764,9 +810,10 @@ export function OrderTrackingScreen({ navigation, route }: Props) {
               </Pressable>
             )}
 
-          {/* An unpaid gateway order can be retried through the same wallet
-              rather than abandoned. There is deliberately no cash fallback. */}
-          {paymentStatus === 'failed' && status !== 'cancelled' && (
+          {/* An unpaid NON-manual order (legacy gateway rows only) can be
+              retried through the checkout. Direct-transfer orders use the
+              instructions screen above instead. There is no cash fallback. */}
+          {paymentStatus === 'failed' && status !== 'cancelled' && !isManualTransferMethod(paymentState.paymentMethod) && (
             <Pressable
               onPress={() => {
                 success('Opening checkout to retry payment…');
