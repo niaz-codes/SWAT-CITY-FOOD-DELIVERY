@@ -68,6 +68,7 @@ async function call(
     method: options.method ?? 'GET',
     headers: {
       Accept: 'application/json',
+      ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -192,9 +193,22 @@ async function main(): Promise<void> {
   check('order method is ubl', text(orderA?.paymentMethod) === 'ubl');
   check('order is NOT confirmed before verification', text(orderA?.status) !== 'confirmed');
 
+  // Placing an order consumes the cart, so the second attempt must fill it
+  // again before it can order.
+  await call('/cart', {
+    method: 'POST',
+    token: customerToken,
+    body: { restaurantId: RESTAURANT_ID, items: [{ foodItem: FOOD_ID, quantity: 1 }] },
+  });
+
   const replayA = await place(keyA);
-  const replayId = text(unwrap(replayA.body).order?._id ?? unwrap(replayA.body).order?.id);
-  check('double-click protection: same key → SAME order', replayId === orderIdA, `replayed=${replayId || '(empty)'}`);
+  const replayData = unwrap(replayA.body);
+  const replayId = text(replayData.order?._id ?? replayData.order?.id);
+  check(
+    'double-click protection: same key → SAME order',
+    (replayA.status === 200 || replayA.status === 201) && replayId === orderIdA,
+    `status=${replayA.status} replayed=${replayId || '(empty)'}`,
+  );
 
   const placedB = await place(keyB);
   const orderB = unwrap(placedB.body).order as Record<string, unknown> | undefined;

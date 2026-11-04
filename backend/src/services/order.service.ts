@@ -626,6 +626,13 @@ async function finaliseOrder(args: {
   order.orderNumber = humanId('SWT', String(order._id));
   await order.save();
 
+  // Pay-side backlink: the payment points AT its order. The old per-method
+  // flows wrote this on payment creation; the unified tail must keep it, or
+  // idempotent replays (`same idempotencyKey → same order`) can never find the
+  // original attempt and a double-clicked checkout dies on "cart is empty".
+  args.payment.order = String(order._id);
+  await args.payment.save();
+
   await OrderItemModel.insertMany(
     items.map((i) => ({
       order: order._id,

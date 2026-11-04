@@ -500,7 +500,7 @@ create table if not exists public.notification_broadcasts (
   title       text not null,
   body        text not null default '',
   audience    text not null default 'all' check (audience in ('all', 'customers', 'riders')),
-  "sentBy"    uuid,
+  sentby      uuid,
   status      text not null default 'sent' check (status in ('sent', 'failed')),
   recipients  double precision not null default 0,
   pushed      double precision not null default 0,
@@ -898,8 +898,10 @@ commit;
 --                    review replies · prep time · analytics)
 -- ---------------------------------------------------------------------------
 -- Additive, idempotent migration. Same conventions as the rest of the file:
--- camelCase quoted identifiers, no FKs, RLS enabled with zero policies, and
--- CHECK constraints only widened via drop + re-add inside the same block.
+-- UNQUOTED lowercase identifiers (the backend db facade lowercases every key,
+-- so any quoted camelCase column would be unreachable for writes AND reads),
+-- no FKs, RLS enabled with zero policies, and CHECK constraints only widened
+-- via drop + re-add inside the same block.
 -- ---------------------------------------------------------------------------
 begin;
 
@@ -911,13 +913,13 @@ create table if not exists public.chat_messages (
   "order"      uuid not null,
   ride         uuid,
   sender       uuid not null,
-  "senderRole" text not null check ("senderRole" in ('customer','rider','restaurant')),
+  senderrole  text not null check (senderrole in ('customer','rider','restaurant')),
   recipient    uuid not null,
   "body"       text not null,
-  "readAt"     timestamptz,
-  "deletedAt"  timestamptz,
-  createdAt    timestamptz not null default now(),
-  updatedAt    timestamptz not null default now(),
+  readat       timestamptz,
+  deletedat    timestamptz,
+  createdat    timestamptz not null default now(),
+  updatedat    timestamptz not null default now(),
   constraint chat_messages_body_not_blank check (length(btrim("body")) > 0),
   constraint chat_messages_body_len check (length("body") <= 1000)
 );
@@ -927,37 +929,37 @@ create index if not exists chat_messages_order_created_idx
 -- Unread triage: quick "any new messages?" lookups per user.
 create index if not exists chat_messages_recipient_unread_idx
   on public.chat_messages (recipient, createdat desc)
-  where "readAt" is null and "deletedAt" is null;
+  where readat is null and deletedat is null;
 
 -- 2) Referral program on users (customers only participate; rider/restaurant
 --    columns stay null). The code is unique to its owner.
-alter table public.users add column if not exists "referralCode" text;
-alter table public.users add column if not exists "referredBy" uuid;
+alter table public.users add column if not exists referralcode text;
+alter table public.users add column if not exists referredby uuid;
 create unique index if not exists users_referral_code_uq
-  on public.users ("referralCode")
-  where "referralCode" is not null;
+  on public.users (referralcode)
+  where referralcode is not null;
 create index if not exists users_referred_by_idx
-  on public.users ("referredBy")
-  where "referredBy" is not null;
+  on public.users (referredby)
+  where referredby is not null;
 
 -- 3) Loyalty points balance on the customer profile (integer points; the Rs
 --    value of one point and the earn rate live in app_settings).
-alter table public.customer_profiles add column if not exists "loyaltyPoints" integer not null default 0;
+alter table public.customer_profiles add column if not exists loyaltypoints integer not null default 0;
 
 -- 4) Scheduled food delivery + persisted tip + loyalty ledger fields on orders.
-alter table public.orders add column if not exists "scheduledFor" timestamptz;
-alter table public.orders add column if not exists "tip" double precision not null default 0;
-alter table public.orders add column if not exists "loyaltyPointsRedeemed" integer not null default 0;
-alter table public.orders add column if not exists "loyaltyDiscount" double precision not null default 0;
-alter table public.orders add column if not exists "loyaltyPointsEarned" integer not null default 0;
+alter table public.orders add column if not exists scheduledfor timestamptz;
+alter table public.orders add column if not exists tip double precision not null default 0;
+alter table public.orders add column if not exists loyaltypointsredeemed integer not null default 0;
+alter table public.orders add column if not exists loyaltydiscount double precision not null default 0;
+alter table public.orders add column if not exists loyaltypointsearned integer not null default 0;
 create index if not exists orders_scheduled_idx
-  on public.orders ("scheduledFor")
-  where "scheduledFor" is not null and status in ('pending','confirmed','preparing','ready');
+  on public.orders (scheduledfor)
+  where scheduledfor is not null and status in ('pending','confirmed','preparing','ready');
 
 -- 5) Restaurant replies to reviews (one reply per review, set via the portal).
 alter table public.reviews add column if not exists "reply" text;
-alter table public.reviews add column if not exists "repliedAt" timestamptz;
-alter table public.reviews add column if not exists "repliedBy" uuid;
+alter table public.reviews add column if not exists repliedat timestamptz;
+alter table public.reviews add column if not exists repliedby uuid;
 do $$
 begin
   if exists (select 1 from pg_constraint where conrelid = 'public.reviews'::regclass
@@ -969,8 +971,8 @@ begin
 end $$;
 
 -- 6) Restaurant-level prep window override (minutes in kitchen; the customer-
---    visible estimate becomes prepTimeMin + travel when set).
-alter table public.restaurants add column if not exists "prepTimeMin" integer;
+--    visible estimate becomes preptimemin + travel when set).
+alter table public.restaurants add column if not exists preptimemin integer;
 do $$
 begin
   if exists (select 1 from pg_constraint where conrelid = 'public.restaurants'::regclass
@@ -978,7 +980,7 @@ begin
     alter table public.restaurants drop constraint restaurants_prep_time_min_range;
   end if;
   alter table public.restaurants add constraint restaurants_prep_time_min_range
-    check ("prepTimeMin" is null or ("prepTimeMin" > 0 and "prepTimeMin" <= 240));
+    check (preptimemin is null or (preptimemin > 0 and preptimemin <= 240));
 end $$;
 
 -- 7) New chat event for push routing: widen the notification event CHECK.
