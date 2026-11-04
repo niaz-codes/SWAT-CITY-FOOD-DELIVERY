@@ -198,10 +198,21 @@ export async function savePaymentMethodConfig(
   };
 
   if (incoming.enabled) {
-    if (incoming.accountTitle.length < 3) {
+    // Validate the EFFECTIVE final config, not just the incoming fields:
+    // incoming values win, then the admin's earlier saved row, then the
+    // server defaults. This is what lets a plain enable-toggle work —
+    // e.g. JazzCash switched off then on again with no new details keeps
+    // the real default number — while a channel with NO usable account
+    // anywhere still cannot be enabled.
+    const current = await getPaymentMethodConfig(channel);
+    const effective = mergePaymentMethodConfig(channel, {
+      ...current.config,
+      ...incoming,
+    }).config;
+    if (effective.accountTitle.length < 3) {
       throw BAD_REQUEST('Account title must be at least 3 characters when the method is enabled');
     }
-    if (incoming.accountNumber.length < 5) {
+    if (effective.accountNumber.length < 5) {
       throw BAD_REQUEST('Account number must be at least 5 characters when the method is enabled');
     }
   }
