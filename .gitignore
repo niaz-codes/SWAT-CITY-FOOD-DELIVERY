@@ -58,3 +58,4 @@ eas-build.log
 .vercel
 .env*
 *.tsbuildinfo
+backend/probe.mts
