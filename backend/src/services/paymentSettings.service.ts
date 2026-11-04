@@ -24,6 +24,17 @@ export type TransferChannel = 'ubl' | 'easypaisa' | 'jazzcash';
 
 export const TRANSFER_CHANNELS: TransferChannel[] = ['ubl', 'easypaisa', 'jazzcash'];
 
+/**
+ * Storage channel → the CHECKOUT method key the customer picks and
+ * `validations/order.ts` accepts (MANUAL_TRANSFER_METHODS). The wallets are
+ * advertised with the _transfer suffix; only the bank method shares the name.
+ */
+export const METHOD_BY_CHANNEL: Record<TransferChannel, string> = {
+  ubl: 'ubl',
+  easypaisa: 'easypaisa_transfer',
+  jazzcash: 'jazzcash_transfer',
+};
+
 export interface PaymentMethodConfig {
   enabled: boolean;
   /** Human label shown to customers, e.g. 'UBL — United Bank Limited'. */
@@ -153,7 +164,11 @@ export async function enabledTransferMethods(): Promise<
     .map((row) => ({
       ...row.config,
       channel: row.channel,
-      method: row.channel,
+      // The CHECKOUT method key (what validate-order accepts), not the storage
+      // channel: the wallets are advertised as easypaisa_transfer /
+      // jazzcash_transfer while the admin row stores them under bare
+      // channel names.
+      method: METHOD_BY_CHANNEL[row.channel],
       label: channelLabel(row.channel),
     }));
 }

@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   TRANSFER_CHANNELS,
   TRANSFERS_ENABLED_KEY,
+  METHOD_BY_CHANNEL,
   envPaymentMethodDefaults,
   mergePaymentMethodConfig,
   paymentMethodSettingKey,
@@ -84,6 +85,14 @@ describe('payment method settings', () => {
     assert.deepEqual(config, envPaymentMethodDefaults('jazzcash'));
     const nullCase = mergePaymentMethodConfig('jazzcash', null);
     assert.equal(nullCase.source, 'env-default');
+  });
+
+  it('maps storage channels onto the checkout method keys the order validation accepts', () => {
+    assert.deepEqual(METHOD_BY_CHANNEL, {
+      ubl: 'ubl',
+      easypaisa: 'easypaisa_transfer',
+      jazzcash: 'jazzcash_transfer',
+    });
   });
 
   it('master switch has one fixed key the admin UI writes', () => {
