@@ -1073,7 +1073,22 @@ export const transferApi = {
    */
   async submit(
     orderId: string,
-    input: { transactionRef: string; imageUri: string; mimeType?: string },
+    input: {
+      transactionRef: string;
+      imageUri: string;
+      mimeType?: string;
+      /**
+       * When provided, the bytes travel as a base64 STRING part instead of a
+       * `content://` file part. Several Android builds cannot open a picker
+       * stream inside fetch multipart — the request dies client-side (nothing
+       * reaches the server) and surfaces as a misleading "Network unreachable.
+       * Check your connection." on the Submit button. The string part is read
+       * from memory, so there is no external stream to open.
+       */
+      base64?: string;
+      /** 0-100 upload progress, if the caller renders it. */
+      onProgress?: (percent: number) => void;
+    },
   ): Promise<ManualTransferSubmitResult> {
     const uri = input.imageUri;
     // The picker usually hands back a JPEG; Android's editor can save PNG and
@@ -1090,17 +1105,29 @@ export const transferApi = {
       : mimeType.toLowerCase().includes('webp')
         ? 'webp'
         : 'jpg';
+    // A base64 data-URI prefix (if any) must not travel inside the part bytes.
+    const rawBase64 = input.base64?.replace(/^data:[^;]+;base64,/, '');
     const form = new FormData();
     form.append('transactionRef', input.transactionRef.trim());
-    form.append('receipt', {
-      uri,
-      name: `receipt.${ext}`,
-      type: mimeType,
-    } as unknown as Blob);
-    const res = await httpUpload<{
+    if (rawBase64) {
+      form.append('receipt', {
+        string: rawBase64,
+        name: `receipt.${ext}`,
+        type: mimeType,
+      } as unknown as Blob);
+    } else {
+      form.append('receipt', {
+        uri,
+        name: `receipt.${ext}`,
+        type: mimeType,
+      } as unknown as Blob);
+    }
+    // XHR-backed upload: real progress events plus the longer upload budget,
+    // and NEVER retried (a half-sent photo must not be replayed).
+    const res = await httpUploadWithProgress<{
       message?: string;
       awaitingVerification?: boolean;
-    }>(`/payments/orders/${orderId}/transfer`, form);
+    }>(`/payments/orders/${orderId}/transfer`, form, input.onProgress);
     return {
       message:
         res.data.message ?? 'Payment submitted. Waiting for admin verification.',

@@ -87,8 +87,18 @@ export function PaymentProofScreen({ navigation, route }: Props) {
     uri: string;
     mimeType?: string;
     fileSize?: number;
+    /**
+     * The compressed bytes as base64, read by the picker itself. The upload
+     * sends THIS as the file part — a `content://` stream part is exactly the
+     * thing some Android builds cannot open inside multipart, which used to
+     * kill the Submit button with "Network unreachable" before a single byte
+     * left the phone.
+     */
+    base64?: string;
   } | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  /** Upload percent while the receipt is on the wire (XHR progress). */
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
 
   const data: TransferInstructions | null = details.data;
 
@@ -114,6 +124,9 @@ export function PaymentProofScreen({ navigation, route }: Props) {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         quality: 0.7,
+        // Base64 comes free with the compression pass: the submit uses these
+        // bytes directly instead of reopening a content:// stream.
+        base64: true,
       });
       const asset = result.assets?.[0];
       if (result.canceled || !asset?.uri) return;
@@ -122,7 +135,12 @@ export function PaymentProofScreen({ navigation, route }: Props) {
         return;
       }
       haptics.light();
-      setReceipt({ uri: asset.uri, mimeType: asset.mimeType ?? undefined, fileSize: asset.fileSize });
+      setReceipt({
+        uri: asset.uri,
+        mimeType: asset.mimeType ?? undefined,
+        fileSize: asset.fileSize,
+        base64: asset.base64 ?? undefined,
+      });
     } catch (e) {
       toastError(apiErrorMessage(e, 'Could not open the picker. Please try again.'));
     }
@@ -139,6 +157,8 @@ export function PaymentProofScreen({ navigation, route }: Props) {
         mediaTypes: ['images'],
         quality: 0.7,
         exif: false,
+        // Same reason as the gallery picker: bytes travel via base64.
+        base64: true,
       });
       const asset = result.assets?.[0];
       if (result.canceled || !asset?.uri) return;
@@ -147,7 +167,12 @@ export function PaymentProofScreen({ navigation, route }: Props) {
         return;
       }
       haptics.light();
-      setReceipt({ uri: asset.uri, mimeType: asset.mimeType ?? undefined, fileSize: asset.fileSize });
+      setReceipt({
+        uri: asset.uri,
+        mimeType: asset.mimeType ?? undefined,
+        fileSize: asset.fileSize,
+        base64: asset.base64 ?? undefined,
+      });
     } catch (e) {
       toastError(apiErrorMessage(e, 'Could not open the camera. Please try again.'));
     }
@@ -190,11 +215,14 @@ export function PaymentProofScreen({ navigation, route }: Props) {
     if (!receipt || !refValid || submitting) return;
     haptics.medium();
     setSubmitting(true);
+    setUploadPct(null);
     try {
       const res = await transferApi.submit(orderId, {
         transactionRef: refTrimmed,
         imageUri: receipt.uri,
         mimeType: receipt.mimeType,
+        base64: receipt.base64,
+        onProgress: (percent) => setUploadPct(percent),
       });
       success(res.message);
       navigation.replace('OrderTracking', { orderId });
@@ -203,6 +231,7 @@ export function PaymentProofScreen({ navigation, route }: Props) {
       // verbatim (duplicate proof, reference already used, attempts exhausted…).
       toastError(apiErrorMessage(e, 'Could not submit your payment. Please try again.'));
       setSubmitting(false);
+      setUploadPct(null);
     }
   };
 
@@ -466,6 +495,14 @@ export function PaymentProofScreen({ navigation, route }: Props) {
                 loading={submitting}
                 disabled={!canSubmit}
               />
+              {/* Upload progress (XHR onprogress) — on slow mobile links a
+                  silent spinner reads as a dead button. Showing the percent
+                  tells the customer the bytes ARE moving. */}
+              {submitting && uploadPct !== null && uploadPct < 100 && (
+                <AppText variant="micro" color={colors.textMuted} style={styles.uploadHint}>
+                  Uploading receipt… {uploadPct}%
+                </AppText>
+              )}
             </View>
           </View>
         )}
@@ -547,4 +584,5 @@ const styles = StyleSheet.create({
   receiptThumb: { width: 56, height: 56, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   receiptInfo: { flex: 1, gap: 2 },
   submitWrap: { marginTop: spacing.sm },
+  uploadHint: { marginTop: spacing.xxs, textAlign: 'center' },
 });
